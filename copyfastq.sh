@@ -13,6 +13,9 @@ mkdir $outdir/fastqFiles
 ## Copy RNAseq files
 cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/FSD1_RNAseq $outdir/fastqFiles
 
+## Copy WT RNAseq files from Liu et al. 2017 
+cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/FSD1_RNAseq/SRR_Liu2017 $outdir/fastqFiles
+
 ## Copy ChIPseq files
 cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/2024_Run143_FASTQ/143-3_ChIP_fsd1-gfpXsad1_GFPtrap* $outdir/fastqFiles/ChIPseq
 cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/2024_Run143_FASTQ/143-5_ChIP_fsd1-gfpXsad1_GFPtrap* $outdir/fastqFiles/ChIPseq
