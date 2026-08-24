@@ -13,7 +13,6 @@ mkdir $outdir/fastqFiles
 ## Copy RNAseq files
     echo "Copying RNAseq files ...."
 cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/FSD1_RNAseq $outdir/fastqFiles
-mv $outdir/fastqFiles/FSD1_RNAseq/* $outdir/fastqFiles/FSD1_RNAseq
 
 ## Copy WT RNAseq files from Liu et al. 2017
 cp -r /project/zallab/SequencingArchive/BaseSpaceDownloads/FSD1_RNAseq/SRR_Liu2017 $outdir/fastqFiles
