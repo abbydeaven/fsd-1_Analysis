@@ -5,7 +5,7 @@
 
 ## save outdir -- modify if needed
 
-outdir="./fsd1_Analysis"
+outdir="./fsd-1_Analysis"
 
 mkdir outdir
 mkdir $outdir/fastqFiles
