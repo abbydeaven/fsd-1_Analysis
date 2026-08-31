@@ -1,0 +1,2173 @@
+---
+title: "fsd1_paper_figures"
+author: "Abby Deaven"
+date: "2026-03-23"
+output: html_document
+toc: true
+number_sections: true
+---
+# Load Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+warning=FALSE,
+message=FALSE,
+fig.width=7, fig.height=4,
+commend="#")
+
+
+if (!require("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("dplyr", "tidyverse", "txdbmaker", "GenomicRanges", "ggplot2", "ChIPseeker", "clusterProfiler", "scater", "stringr", "ComplexHeatmap", "circlize", "tidyr", "purrr"))
+
+install.packages("C:/Users/abbyd/Documents/Research/Bioinformatics/NcGenome/org4/org.Ncrassa.eg.db",
+                 repos = NULL,
+                 type = "source")
+
+library(org.Ncrassa.eg.db)
+library(dplyr)
+library(tidyverse)
+setwd("C:/Users/abbyd/Documents/Research/Bioinformatics/2026_fsd1Analysis")
+
+## Create color palette for ease of use
+col.pal = data.frame(col = c("#9F79EE", "grey", "#7fbf7b", "#e9a3c9", "#67a9cf", "#ef8a62"), sample = c("fsd-1", "ns", "OX down/WT hyph", "OX up/OX", "KO down/KO", "KO up/wt dpf5"))
+
+
+```
+
+
+# Prepare txdb object for downstream use
+```{r txdb}
+
+library(txdbmaker)
+
+#make table of chromosome sizes
+chrom.sizes = data.frame(chrom = c("CM002236.1", "CM002237.1", "CM002238.1", "CM002239.1", "CM002240.1", "CM002241.1", "CM002242.1", "KC683708", "KI440765", "KI440766", "KI440769", "KI440772", "KI440773", "KI440776", "KI440777"), length = as.numeric(c("9798893", "4478683", "5274802", "6000761", "6436246","4218384", "4255303", "64840", "192308", "142473", "19714", "9397", "8983", "4755", "1646")))
+
+core.chroms = c("CM002236.1", "CM002237.1", "CM002238.1", "CM002239.1", "CM002240.1", "CM002241.1", "CM002242.1", "KC683708")
+
+Nc12_txdb <- makeTxDbFromGFF("../NcGenome/FungiDB-68_NcrassaOR74A.gff",
+                format='gff',
+                dataSource=NA,
+                organism="Neurospora crassa",
+                taxonomyId=NA,
+                circ_seqs='KC683708',
+                chrominfo=chrom.sizes,
+                miRBaseBuild=NA,
+                metadata=NULL)
+
+```
+
+#Figure 1A: Plot expression of  fsd-1 in different WT RNA-seq samples. This chunk uses the count matrix and samplesheet from 2025 PRC2 paper 
+```{r}
+sampleFile <- read.table("./WT_Development_Results/RNAseq_Sample_File.txt",skip=0, header=TRUE,stringsAsFactors=FALSE, row.names=2, check.names=FALSE, sep="\t")
+
+all_tpm <- read.table("./WT_Development_Results/Avg_TPM_plusPC_withMeta.txt", header = T, sep = "\t")
+
+## Select fsd-1 TPM for each condition
+fsd1_gene_tpm <- all_tpm %>% mutate(logTPM_plusPC = log(TPM_plusPC, base=2)) %>%  filter(GeneID == "fsd-1") %>% dplyr""(GeneID, Category, logTPM_plusPC)
+fsd1_gene_tpm$Category <- as.character(fsd1_gene_tpm$Category)
+#Then turn it back into a factor with the levels in the correct order
+fsd1_gene_tpm$Category <- factor(fsd1_gene_tpm$Category, levels=unique(fsd1_gene_tpm$Category))
+
+BiocManager::install('labeller')
+library(scales)
+library(labeller)
+
+#Make a scatterplot of fsd1 expression
+p <- fsd1_gene_tpm %>%
+  ggplot(aes(x=factor(Category), logTPM_plusPC)) + 
+    geom_jitter(width = 0.2, aes(fill = factor(Category)), size = 4, shape = 21, colour = "black", show.legend = FALSE) +
+  scale_fill_manual("",values = c("#F0E442","#56B4DF", "#009E73", "#D55E00","#0072B2", "#E69F00",    "#CC79A7")) +
+    labs(x="Experiment Category", y=expression(italic('fsd-1')~'log '[2]~"(TPM+1)")) +
+#  theme(axis.text=element_text(size=18), axis.title = element_text(size = 20))+
+        theme(panel.background = element_rect(color=NA, fill = "white"))+
+         theme(plot.background = element_rect(fill = "white"))+
+        theme(axis.line = element_line(color = "black",
+                                 linewidth = 1))+
+        scale_x_discrete(labels = label_wrap(10)) +
+    theme(axis.text.x=element_text(angle=45, hjust=1, size=18), panel.spacing.x=unit(0.5, "lines"), axis.title=element_text(size=17)) +
+    theme(axis.text.y=element_text(hjust=1, size=17), panel.spacing.y=unit(0.5, "lines")) 
+p
+   ggsave("./Plots/Fig1A_fsd1_expression.png", plot=p, width =10, height = 6, unit="in",  dpi=400)
+
+```
+
+#Figure 3: FSD-1 Binding 
+See https://github.com/abbydeaven/MapCUTnRunV2.0_fsd1/blob/main/DownstreamAnalysis.sh for full analysis downstream of peakcalling. Peaks were called with macs3 for each ChIP-seq same, then intersected with bedtools:
+```{bash fsd-1 call peaks + merge}
+
+## Use bedtools to make a consensus peakset of peaks with 80% overlap in all samples
+ml BEDTools/2.31.1-GCC-13.3.0
+
+bedtools intersect -a ${PeakDir}/143_5_ChIP_fsd1_gfpXsad1_GFPtrap_Rep1.narrowPeak -b ${PeakDir}/143_3_ChIP_fsd1_gfpXsad1_GFPtrap_Rep1.narrowPeak -f 0.5 -wa > ${PeakDir}/fsd1_Consensus_Peaks.bed
+
+
+```
+
+
+## ID FSD-1 binding targets
+```{r fsd1 ChIPseq data}
+library(ChIPseeker)
+library(RColorBrewer)
+library(stringr)
+library(GenomicRanges)
+
+
+# load in  peaksets intersected via bedtools
+fsd1_peaks <- read.table("./ChIPOutput/PeakFiles/fsd1_Consensus_Peaks.bed", sep="\t")[-1,]
+
+# convert peaks to GRanges format
+#fsd1_peaks$V1 = gsub("\\.1", "", fsd1_peaks$V1)
+    fsd1_peaks.gr <- fsd1_peaks %>% filter(!is.na(V2)) %>% dplyr::select(V1, V2, V3)
+    colnames(fsd1_peaks.gr) = c("chr", "start", "end")
+    fsd1_peaks.gr <- GRanges(fsd1_peaks.gr)
+    fsd1_peaks.gr <- trim(fsd1_peaks.gr, use.names=TRUE)
+    
+write.table(fsd1_peaks.gr, "./ChIPOutput/PeakFiles/fsd1_Consensus_Peaks_gr.bed", col.names=FALSE, sep="\t", quote=FALSE, row.names=FALSE)
+
+# annotate peaks from TxDb
+fsd1_anno <- annotatePeak(fsd1_peaks.gr, tssRegion=c(-500, 300),
+                         TxDb=Nc12_txdb, annoDb='org.Ncrassa.eg.db')
+
+# export annotation as df 
+fsd1_target_df <- as.data.frame(fsd1_anno)
+  fsd1_target_df <- fsd1_target_df %>% dplyr::select(seqnames, geneId, annotation, distanceToTSS) %>% filter(annotation == "Promoter")
+
+  write.table(fsd1_target_df, file="./ChIPOutput/fsd1_targets.txt", sep="\t", row.names=FALSE, quote=FALSE)
+  fsd1_targets <- unique(fsd1_target_df$geneId) ## remove genes with multiple peaks
+
+  write.table(fsd1_target_df, file="./ChIPOutput/fsd1_target_genes.txt", sep="\t", quote=FALSE, row.names = FALSE)           
+  fsd1_targets <- read.table("./ChIPOutput/fsd1_target_genes.txt", sep="\t", header=TRUE)[,2]
+
+
+```
+
+
+### Fig 3C - Pie chart of features overlapping peaksp
+```{r fsd1 ChIPseq data}
+# Create pie chart of features overlapping peaks
+  png("./Plots/fsd1_ChIP_Binding/fsd1_pie.png", width = 600, height = 500)
+  plotAnnoPie(fsd1_anno, radius = 0.9, cex =1.25)
+dev.off()
+```
+
+### These following commands generate metadata plots from ChIPseeker. These are not used in the paper but helpful for drawing conclusions.
+
+```{r fsd1 ChIPseq data}
+# plot peaks over promoters
+ promoter <- getPromoters(TxDb=Nc_txdb, upstream=500, downstream=300)
+ tagMatrix <- getTagMatrix(fsd1_peaks.gr, windows=promoter)
+ tagHeatmap(tagMatrix)
+ 
+# plot fsd-1 binding over chromosomes
+fsd1.cov <- readPeakFile("./ChIPOutput/PeakFiles/fsd1_Consensus_Peaks.bed", header=F, skip=1)
+ 
+  cov <- covplot(fsd1.cov, weightCol="V5", chrs=c("CM002236", "CM002237.1", "CM002238.1", "CM002239.1", "CM002240.1", "CM002241.1", "CM002242.1"))
+
+  png("./Plots/fsd1_ChIP_Binding/fsd1_covplot.png", width = 600, height = 600)
+  cov
+  dev.off()
+
+# plot features overlapping peaks 
+png("./Plots/fsd1_ChIP_Binding/fsd1_vennpie.png", width = 600, height = 600)
+  plotAnnoPie(fsd1_anno, cex=1, ndigit = 1)
+  dev.off()
+
+# plot distance between peaks adn nearest TSS
+png("./Plots/fsd1_ChIP_Binding/fsd1_dist.png", width = 600, height = 400)
+  plotDistToTSS(fsd1_anno,
+              title="Distribution of transcription factor-binding loci\nrelative to TSS",
+              palette = "Set2",
+              cex=1)
+  dev.off()
+```
+
+##FSD-1 target expression
+```{r fsd1 target expression, making lists}
+# Determine if FSD-1 targets are upregulated or downregulated during normal development. This uses the DE table generated for Deaven 2025
+
+## Read in results of differential expression analysis
+de_genes <- read.table("./WT_Development_Results/WT_DE_Gene_Matrix.txt", sep = "\t", header = TRUE)
+
+# For each gene: Keep only days post-fertilization where gene is significantly differentially expressed, then average the L2FC across significant timepoints
+
+de_genes_sig.avg <- de_genes %>% 
+  filter(FDR < 0.05) %>% 
+  filter(logFC > 2 | logFC < -2) %>%
+  group_by(GeneID) %>% 
+  summarise(logFC.avg = mean(logFC), 
+            sd.avg = sd(logFC),
+            median=median(logFC), 
+            n = n(),
+            se = sd(logFC) / sqrt(n))
+
+  de_genes_up <- de_genes_sig.avg %>%
+    filter(logFC.avg > 2) %>% 
+    pull(GeneID)
+  
+  de_genes_down <- de_genes_sig.avg %>%
+    filter(logFC.avg < -2) %>%
+    pull(GeneID)
+  
+# Take this list and then extract only fsd1 targets
+de_genes_fsd1target <- de_genes_sig.avg %>%
+  filter(GeneID %in% fsd1_targets) %>%
+  distinct(GeneID, .keep_all = TRUE) %>%
+  pull(GeneID) 
+
+write.table(de_genes_fsd1target, "./RNAseq_Output/DE_Results/fsd1targets_devde.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+# Separate into lists of genes that are upregulated and downregulated based on average L2FC
+de_genes_fsd1target_up <- intersect(de_genes_fsd1target$GeneID,de_genes_up$GeneID)
+de_genes_fsd1target_down <- intersect(de_genes_fsd1target$GeneID,de_genes_down$GeneID)
+```
+
+####Venn Diagram -- not used in final paper
+```{r fsd1 target expression, venn diagram}
+## Venn diagram approach -- DID NOT use in paper for clarity ##
+if (!require(devtools)) install.packages("devtools")
+devtools::install_github("yanlinlin82/ggvenn")
+library(ggvenn)
+
+# Make comparisons between  up/down genes and 
+venn.neg = list('Dev.Repress'=de_genes_down$GeneID, 'FSD-1 bound'=fsd1_targets)
+venn.pos = list('Dev.Induced'=de_genes_up$GeneID, 'FSD-1 bound'=fsd1_targets)
+```
+
+#### Figure 3D - UpSet plot of FSD-1 target expression
+```{r fsd1 target expression, upset plot}
+library(ComplexHeatmap)
+library(ComplexUpset)
+upset1.list <- list('Development Up'=de_genes_up, 'Development Down'=de_genes_down, "FSD-1 Target"=fsd1_targets)
+
+    upset1.mat <- list_to_matrix(upset1.list)
+    upset1.comb = make_comb_mat(upset1.mat, mode = "distinct")
+     # setting custom order -- write out a list of the combinations sorted by size, then rank largest -> smallest to organize columns
+     # check order here -- default works for this one
+          comb_order = data.frame(name = comb_name(upset1.comb), size =comb_size(upset1.comb))
+
+
+ss1 = set_size(upset1.comb)
+cs1 = comb_size(upset1.comb)
+
+
+upset=    UpSet(upset1.comb,
+          pt_size = unit(6, "mm"), lwd = 3,
+#          comb_order=comb_order,
+          set_order = c("FSD-1 Target", "Development Up", "Development Down"),
+          height = unit(8, "cm"),
+          width= unit(10,"cm"),
+              top_annotation = HeatmapAnnotation(
+        "Gene \n Intersections" = anno_barplot(cs1, 
+            ylim = c(0, max(cs1)*1.1),
+            border = FALSE, 
+            height = unit(10, "cm"),
+            width = unit(10, "cm"),
+            labels_gp = gpar(fontsize = 22),
+            axis_param = list(gp = gpar(fontsize = 20))
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90,
+        annotation_name_gp = gpar(fontsize = 24)),
+
+        left_annotation = rowAnnotation("Category" = anno_text(set_name(upset1.comb), 
+            location = 0.9, 
+            gp = gpar(fontsize = 24),
+            just = "right",
+            height = unit(4, "cm"),
+            width = unit(6.5, 'cm'))),
+            show_row_names = FALSE)
+
+
+png(filename="./RNAseq_Output/DE_Results/Fig2_Dev_Upset.png", height= 600, width = 700)
+draw(upset)    
+dev.off()
+```
+
+
+#Figure 4: fsd-1 OX + KO RNA-seq analysis
+## Read in count files and process. I processed both WT RNA-seq from Liu et al 2017 and the FSD-1 overexpression (OX) and deletion (CM) files. 
+BEFORE RUNNING - Make a "DE_Results" subfolder in RNAseq_Output 
+```{r}
+BiocManager::install(c("scater", "edgeR"))
+library(edgeR)
+library(scater)
+library(purrr)
+library(tidyverse)
+
+# Read in count matrices
+f_files <- list.files("./RNAseq_Output/counts", pattern = ".?_counts.txt", full.names = T, recursive = T)
+f_files <- grep(f_files, pattern='.?_counts.txt.summary', invert=TRUE, value=TRUE)
+
+read_in_feature_counts<- function(file){
+  cnt<- read_tsv(file, col_names =T, comment = "#")
+  #cnt<- cnt %>% dplyr::select(-Chr, -Start, -End, -Strand, -Length)
+  return(cnt)
+}
+
+#Creating count matrix of geneID and loci:
+raw_counts <- map(f_files, read_in_feature_counts)
+raw_counts <- purrr::reduce(raw_counts, inner_join) 
+
+#Select only fsd-1 deletion/overexpression files
+raw_counts_fsd1 <- raw_counts %>% dplyr::select(! contains("SRR"))
+#Shorten filenames to remove file paths
+colnames(raw_counts_fsd1) <- gsub("../RNAseq_Output/bamFiles/", "", colnames(raw_counts_fsd1))
+colnames(raw_counts_fsd1) <- gsub('.bam', "", colnames(raw_counts_fsd1))
+
+#Select most relevant columns
+fsd1_count_df <- raw_counts_fsd1 %>% dplyr::select(-Chr, -Start, -End, -Strand)
+#Write raw counts to a table
+write.table(fsd1_count_df, file="./RNAseq_Output/fsd1_counts_df.txt", sep="\t", quote=FALSE, col.names=NA, row.names=TRUE)
+
+#Calculate transcripts per million
+fsd1_count_df2 <- fsd1_count_df %>% column_to_rownames(var = "Geneid") %>% dplyr::select(-Length)
+  tpm <- calculateTPM(fsd1_count_df2, lengths=fsd1_count_df$Length)
+  tpm <- as.data.frame(calculateTPM(fsd1_count_df2, lengths=fsd1_count_df$Length))
+  write.table(tpm, file="./RNAseq_Output/fsd1_ox_ko_tpm.txt", sep="\t", quote=FALSE, col.names=NA, row.names=TRUE)
+
+
+#Making a samplesheet, copied from above. Notes:
+## - Based on PCA, KO 2 and K05 (KOa) will be counted separately from KO3 + KO4 (KOb). Sig changes in BOTH datasets will be carried forward.
+## - OX 3 will be dropped
+fsd1_samples <- data.frame(Sample=c("CM2","CM3","CM4","CM5", "CWT1","CWT4","CWT5","OE1","OE2","OE4","WT1","WT2","WT3","WT4"),
+  Genotype = c(rep("fsd1_KOa", 1), rep("fsd1_KOb", 2), "fsd1_KOa", rep("WT", 3), rep("fsd1_OX", 3), rep("WT", 4)),
+  Tissue = c(rep("dpf5", 4), rep("dpf5", 3), rep("Mycelia", 7)),
+  Rep = c("1", "2", "3", "4", "1", "2", "3", "1", "2","3", "1", "2", "3", "4"))
+  fsd1_samples$SampleID <- paste(fsd1_samples$Genotype, fsd1_samples$Tissue, sep="_")
+```
+
+##KO Differential Expression
+```{r KO DE}
+## Splitting into OX and deletion:
+fsd1_KO_samples <- fsd1_samples %>% filter(Tissue == "dpf5")
+  fsd1_KO_info <- fsd1_KO_samples$SampleID
+  fsd1_counts_KO <- fsd1_count_df2 %>% dplyr::select(1:7)
+  genes <- data.frame(genes = rownames(fsd1_counts_KO))
+
+### Making EdgeR DE object
+dge_ko <- DGEList(counts = fsd1_counts_KO, group = fsd1_KO_info)
+dge_ko
+
+  #Filter out low-abundance genes and calculate normalization factors
+  keep_ko <- filterByExpr(y = dge_ko, min.count	= 5)
+  summary(keep_ko) ##  removes 83 genes 
+  dge_ko <- dge_ko[keep_ko, keep.lib.sizes=FALSE]
+  dge_ko_norm <- calcNormFactors(object = dge_ko)
+  print(dge_ko_norm$samples)
+
+  #normalizing and setting levels/design ###
+  design_mat_ko <- model.matrix(~ 0 + dge_ko_norm$samples$group)
+  colnames(design_mat_ko) <- levels(dge_ko_norm$samples$group)
+  D <- estimateCommonDisp(dge_ko_norm)
+  D <- estimateTagwiseDisp(D)
+  dge_ko_norm2 <- estimateGLMCommonDisp(dge_ko_norm,design_mat_ko,verbose=TRUE)
+  dge_ko_norm2 <- estimateGLMTrendedDisp(dge_ko_norm2, design_mat_ko)
+  dge_ko_norm2 <-estimateGLMTagwiseDisp(dge_ko_norm2, design_mat_ko)
+  
+  #setting GLM fit
+  fit_ko <- glmQLFit(dge_ko_norm2, design_mat_ko, robust=TRUE)
+  
+  #Setting contrasts from above
+  ko.contrasts <- makeContrasts(KOa.vs.WT=fsd1_KOa_dpf5-WT_dpf5, KOb.vs.WT=fsd1_KOb_dpf5-WT_dpf5, KOa.vs.KOb=fsd1_KOa_dpf5-fsd1_KOb_dpf5, levels=design_mat_ko)
+  
+  KOa.vs.WT <- makeContrasts(fsd1_KOa_dpf5-WT_dpf5, levels=design_mat_ko)
+  lrt.KOa.vs.WT <- glmLRT(fit_ko, contrast=KOa.vs.WT)
+  degs_KOa.vs.WT <- topTags(lrt.KOa.vs.WT, n = 10000)
+  write.csv(degs_KOa.vs.WT$table, file="./RNAseq_Output/DE_Results/degs_KOa.vs.WT.csv")
+      sum_a <- data.frame(summary(decideTests(object = lrt.KOa.vs.WT, lfc = 2)))
+      DE_summary <- data.frame(row.names = c("Down", "NotSig", "Up"),
+                          KOa.vs.WT = sum_a$Freq)
+      
+  KOb.vs.WT <- makeContrasts(fsd1_KOb_dpf5-WT_dpf5, levels=design_mat_ko)
+  lrt.KOb.vs.WT <- glmLRT(fit_ko, contrast=KOb.vs.WT)
+  degs_KOb.vs.WT <- topTags(lrt.KOb.vs.WT, n = 10000)
+  write.csv(degs_KOb.vs.WT$table, file="./RNAseq_Output/DE_Results/degs_KOb.vs.WT.csv")
+      sum_b <- data.frame(summary(decideTests(object = lrt.KOb.vs.WT, lfc = 2)))
+      DE_summary$KOb.vs.WT = sum_a$Freq
+
+  KOa.vs.KOb <- makeContrasts(fsd1_KOa_dpf5-fsd1_KOb_dpf5, levels=design_mat_ko)
+  lrt.KOa.vs.KOb <- glmLRT(fit_ko, contrast=KOa.vs.KOb)
+  degs_KOa.vs.KOb <- topTags(lrt.KOa.vs.KOb, n = 10000)
+  write.csv(degs_KOa.vs.KOb$table, file="./RNAseq_Output/DE_Results/degs_KOa.vs.KOb.csv")
+      sum_ab <- data.frame(summary(decideTests(object = lrt.KOa.vs.KOb, lfc = 2)))
+      DE_summary$KOa.vs.KOb = sum_ab$Freq
+```
+
+##OX Differential Expression
+```{r OX DE}
+fsd1_OX_samples <- fsd1_samples %>% filter(Tissue == "Mycelia")
+  fsd1_OX_info <- fsd1_KO_samples$SampleID
+  fsd1_counts_ox <- fsd1_count_df2 %>% dplyr::select(8:15) %>% dplyr::select(-OE3)
+  fsd1_ox_info=fsd1_OX_samples$SampleID
+  
+#Making EdgeR DE object
+dge_ox <- DGEList(counts = fsd1_counts_ox, group = fsd1_ox_info)
+dge_ox
+
+  ### Filter out low-abundance genes and calculate normalization factors
+  keep_ox <- filterByExpr(y = dge_ox, min.count	= 5)
+  summary(keep_ox) ##  removes 826 genes 
+  dge_ox <- dge_ox[keep_ox, keep.lib.sizes=FALSE]
+  dge_ox$lib.size <- colSums(dge_ox$counts)
+  dge_ox_norm <- calcNormFactors(object = dge_ox)
+  print(dge_ox_norm$samples)
+
+  #normalizing and setting levels/design ###
+  design_mat_ox <- model.matrix(~ 0 + dge_ox_norm$samples$group)
+  colnames(design_mat_ox) <- levels(dge_ox_norm$samples$group)
+  D <- estimateCommonDisp(dge_ox_norm)
+  D <- estimateTagwiseDisp(D)
+  dge_ox_norm2 <- estimateGLMCommonDisp(dge_ox_norm,design_mat_ox,verbose=TRUE)
+  dge_ox_norm2 <- estimateGLMTrendedDisp(dge_ox_norm2, design_mat_ox)
+  dge_ox_norm2 <-estimateGLMTagwiseDisp(dge_ox_norm2, design_mat_ox)
+  
+  plotBCV(dge_ox_norm2)
+  #setting GLM fit
+  fit_ox <- glmQLFit(dge_ox_norm2, design_mat_ox, robust=TRUE)
+  
+  ##### Performing DE analysis on each sample #####
+  OX.vs.WT <- makeContrasts(fsd1_OX_Mycelia-WT_Mycelia, levels=design_mat_ox)
+  lrt.OX.vs.WT <- glmLRT(fit_ox, contrast=OX.vs.WT)
+  degs_OX.vs.WT <- topTags(lrt.OX.vs.WT, n = 10000)
+  write.csv(degs_OX.vs.WT$table, file="./RNAseq_Output/DE_Results/degs_OX.vs.WT.csv")
+      sum_ox <- data.frame(summary(decideTests(object = lrt.OX.vs.WT, lfc = 2)))
+      DE_summary$OX.vs.WT = sum_ox$Freq
+write.table(DE_summary, file="fsd1_DE_resultSummary.txt", sep="\t", quote=FALSE, row.names=FALSE)
+```
+
+##Process DE results for KO and OX
+
+```{r OX DE}
+#Read in differential expression files
+deg_files<- list.files(path = "./RNAseq_Output/DE_Results", pattern = "*.csv", full.names = T, recursive = F)
+  
+#Creating count matrix of geneID and loci:
+de_genes <- readr::read_csv(deg_files, id = "file_name")
+colnames(de_genes) <- c("Sample", "GeneID", "logFC", "logCPM", "F","Pvalue", "FDR")
+
+#Removing file path from sample IDs
+de_genes$Sample <- gsub("./RNAseq_Output/DE_Results/degs_", "", de_genes$Sample)
+de_genes$Sample <- gsub(".csv", "", de_genes$Sample)
+
+write.table(de_genes, file = "./RNAseq_Output/DE_Results/DE_Gene_Matrix.txt", sep = "\t")
+  fsd1mutants_de_genes <- read.table("./RNAseq_Output/DE_Results/DE_Gene_Matrix.txt", sep = "\t")
+
+#Removing genes that were filtered out from either analysis 
+  kept_KO <- data.frame(which(keep_ko))
+  kept_OX <- data.frame(which(keep_ox))
+  
+  all_kept_genes <- kept_OX %>% rownames_to_column(var="GeneID") %>% filter(GeneID %in% rownames(kept_KO))
+  
+  fsd1mutants_de_genes <- fsd1mutants_de_genes %>% filter(GeneID %in% all_kept_genes$GeneID)
+    write.table(fsd1mutants_de_genes, file="./RNAseq_Output/DE_Results/fsd1Mut_DE_Gene_Matrix.txt")
+    fsd1target_de_genes <- fsd1mutants_de_genes %>% filter(GeneID %in% fsd1_targets)
+    fsd1mutants_de_genes <- read.table("./RNAseq_Output/DE_Results/fsd1Mut_DE_Gene_Matrix.txt", sep=" ")
+
+#Identifying genes that are up/down in each condition
+comparisons=c("KOa.vs.WT", "KOb.vs.WT", "OX.vs.WT", "KOa.vs.KOb")
+
+for (c in comparisons) {
+  print(c)
+  c_DE_genes <- de_genes %>% filter(Sample == c) %>% filter(FDR < 0.05) %>% filter(logFC > 2 | logFC < -2)
+  gene_file <- paste0("./RNAseq_Output/DE_Results/", c, "all.sig_genes.txt")
+  write.table(c_DE_genes, file=gene_file, sep="\t", row.names=FALSE, quote=FALSE)
+  assign(paste0("all.sig", c), c_DE_genes)
+  
+  c_DE_genes_up <- c_DE_genes %>% filter(logFC > 2)
+    assign(paste0("up.sig.", c), c_DE_genes_up)
+
+  c_DE_genes_down <- c_DE_genes %>% filter(logFC < -2)
+    assign(paste0("down.sig.", c), c_DE_genes_down)
+}
+```
+
+###Identify genes that are dysregulated in FSD-1 KO
+```{r KO DE}
+#Average the FDR and L2FC from each set of KO samples (KOa / KOb)
+de_res_ko <- fsd1mutants_de_genes %>% 
+  filter(Sample %in% c("KOa.vs.WT", "KOb.vs.WT")) %>%
+  group_by(GeneID) %>% 
+  summarize(avg.logFC = mean(logFC), avg.FDR = mean(FDR))
+
+## ID genes that are significantly DE in both sets of KO samples
+ko.sig <- de_res_ko %>% 
+  filter(avg.FDR < 0.05) %>%
+  filter(avg.logFC > 2 | avg.logFC < -2) %>% 
+  distinct(GeneID, .keep_all = TRUE)
+
+write.table(ko.sig, file="./RNAseq_Output/DE_Results/fsd1KO_DE_Results.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+## Pull out FSD-1 targets that are DE
+ko.sig.fsd1targ <- ko.sig %>% filter(GeneID %in% fsd1_targets)
+  de_res_ko.fsd1 <- de_res_ko %>% filter(GeneID %in% fsd1_targets) %>% mutate(Category = "FSD-1")
+  de_res_ko.targets <- de_res_ko %>% filter(! GeneID %in% fsd1_targets) %>% mutate(Category = "not FSD-1") %>% bind_rows(de_res_ko.fsd1)
+
+## Create a matrix of whether genes are FSD-1 targets and their change in expression in fsd-1 KO  
+de_res_ko.targets <- de_res_ko.targets %>% mutate(sig = case_when(
+  avg.FDR < 0.05 & avg.logFC > 2 ~ "UP",
+  avg.FDR < 0.05 & avg.logFC < -2 ~ "DOWN",
+  avg.FDR < 0.05 & avg.logFC < 2 & avg.logFC > -2 ~ "NS", 
+  avg.FDR > 0.05 ~ "NS"))
+
+## Merge info about significance + FSD-1 targeting
+de_res_ko.targets$cat <- paste(de_res_ko.targets$Category, de_res_ko.targets$sig, sep="&")
+  cats <- factor(de_res_ko.targets$cat)
+
+fsd1_kodown <- de_res_ko.targets %>% filter(cat == "FSD-1&DOWN")
+  write.table(fsd1_kodown, file="./RNAseq_Output/DE_Results/fsd1_target_ko_down.txt", sep="\t", row.names=FALSE, quote=FALSE)
+  
+notfsd1_kodown <- de_res_ko.targets %>% filter(cat == "not FSD-1&DOWN")
+  write.table(notfsd1_kodown, file="./RNAseq_Output/DE_Results/notfsd1_target_ko_down.txt", sep="\t", row.names=FALSE, quote=FALSE)
+  
+## Create individual lists for Upset plot
+de_res_ko.upset <- de_res_ko %>% 
+  mutate(Category = case_when(GeneID %in% fsd1_targets ~ "FSD-1 target",
+                                TRUE ~ "not FSD-1 target"),
+          sig = case_when(
+          avg.FDR < 0.05 & avg.logFC > 2 ~ "UP",
+          avg.FDR < 0.05 & avg.logFC < -2 ~ "DOWN",
+          avg.FDR < 0.05 & avg.logFC < 2 & avg.logFC > -2 ~ "NS", 
+          avg.FDR > 0.05 ~ "NS"))
+
+    ko.up = de_res_ko.upset %>% filter(sig == "UP") %>% pull(GeneID)
+    ko.down = de_res_ko.upset %>% filter(sig == "DOWN") %>% pull(GeneID)
+    
+    all.ko = union(ko.up, ko.down)
+
+```
+
+###Identify genes that are dysregulated in FSD-1 OX
+```{r OX DE}
+
+de_res_ox <- fsd1mutants_de_genes %>% filter(Sample == "OX.vs.WT")
+  de_res_ox_sig <- de_res_ox %>% filter(FDR < 0.05 & abs(logFC) >2)
+  write.table(de_res_ox_sig, file="./RNAseq_Output/DE_Results/fsd1OX_DE_Results.txt", sep="\t", row.names=FALSE, quote=FALSE)
+
+
+## Pull out FSD-1 targets that are DE
+de_res_ox.fsd1 <- de_res_ox %>% filter(GeneID %in% fsd1_targets) %>% mutate(Category = "FSD-1")
+de_res_ox.targets <- de_res_ox %>% 
+  filter(! GeneID %in% fsd1_targets) %>% 
+  mutate(Category = "not FSD-1") %>% 
+  bind_rows(de_res_ox.fsd1)
+
+## Create a matrix of whether genes are FSD-1 targets and their change in expression in fsd-1 OX
+de_res_ox.targets <- de_res_ox.targets %>% mutate(sig = case_when(
+  FDR < 0.05 & logFC > 2 ~ "UP",
+  FDR < 0.05 & logFC < -2 ~ "DOWN",
+  FDR < 0.05 & logFC < 2 & logFC > -2 ~ "NS", 
+  FDR > 0.05 ~ "NS"))
+
+## Merge info about significance + FSD-1 targeting
+de_res_ox.targets$cat <- paste(de_res_ox.targets$Category, de_res_ox.targets$sig, sep="&")
+  cats <- factor(de_res_ox.targets$cat)
+
+fsd1_oxup <- de_res_ox.targets %>% filter(cat == "FSD-1&UP")
+  write.table(fsd1_oxup, file="./RNAseq_Output/DE_Results/fsd1_target_oxup.txt", sep="\t", row.names=FALSE, quote=FALSE)
+  
+notfsd1_oxup <- de_res_ox.targets %>% filter(cat == "not FSD-1&UP")
+  write.table(notfsd1_oxup, file="./RNAseq_Output/DE_Results/notfsd1_target_oxup.txt", sep="\t", row.names=FALSE, quote=FALSE)
+  
+## Create separate lists of genes that are up/down in OX
+de_res_ox.upset <- de_res_ox %>% 
+  mutate(Category = case_when(GeneID %in% fsd1_targets ~ "FSD-1 target",
+                                TRUE ~ "not FSD-1 target"),
+          sig = case_when(
+          FDR < 0.05 & logFC > 2 ~ "UP",
+          FDR < 0.05 & logFC < -2 ~ "DOWN",
+          FDR < 0.05 & logFC < 2 & logFC > -2 ~ "NS", 
+          FDR > 0.05 ~ "NS"))
+  
+    ox.up = de_res_ox.upset %>% filter(sig == "UP") %>% pull(GeneID)
+    ox.down = de_res_ox.upset %>% filter(sig == "DOWN") %>% pull(GeneID)
+
+    all.ox = union(ox.up, ox.down)
+    
+    de_res_ox.upset.mat <- de_res_ox.upset %>% 
+      dplyr::select(GeneID, Category, sig) %>% 
+      filter(! (GeneID == "not FSD-1 target" &  sig == "NS")) %>%
+      mutate(Exp = case_when(GeneID %in% de_genes_up$GeneID ~ "DevUp", 
+                             GeneID %in% de_genes_down$GeneID ~ "DevDown"))
+    de_res_ox.upset.mat.long <- de_res_ox.upset.mat %>% 
+      pivot_longer(cols = !GeneID, values_to = "Cat") %>%
+      group_by(GeneID) %>%
+      summarize(Category = list(Cat))
+
+
+```
+
+##Fig 4C: KO Upset Plot
+
+```{r KO upset plot}
+#Making a list of genes that meet each condition, then pivoting to matrix
+    upset.ko.list = list('KO Up' = ko.up, 'KO Down' = ko.down, 'Development Up' = de_genes_up, 'Development Down' = de_genes_down, 'FSD-1 Target'=fsd1_targets)
+    ko.l <- list_to_matrix(upset.ko.list)
+    upset.comb.ko = make_comb_mat(ko.l, mode = "distinct")
+    
+#Putting samples in desired order for plotting
+    comsko = data.frame(name = comb_name(upset.comb.ko), size = comb_size(upset.comb.ko))
+    comsko = comsko %>% arrange(desc(name))
+    
+#Selecting combinations with > 1 category, plus genes that are only up/down regulated in KO
+    ## ko up = 1XXXXX, ko down = 01XXX
+
+    comb.ko = upset.comb.ko[, c('10000', "10100", "10010", "10101", "10001", "10011","01000", "01100", "01101","01001", "01010", "01011")]
+
+     # setting custom order --> putting the single combinations first, and then sorting by intersection size descending
+    comb_order.ko = data.frame(pos = 1:12, name = comb_name(comb.ko), size =comb_size(comb.ko))
+          comb_order.ko=as.integer(comb_order.ko$pos)
+
+ss.ko = set_size(comb.ko)
+cs.ko = comb_size(comb.ko)
+comb_col.ko = c("#ef8a62", "#ef8a62",  "#ef8a62", "#ef8a62", "#ef8a62","#ef8a62", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf")
+
+#Make Upset Plot
+upset2=    UpSet(comb.ko,
+          pt_size = unit(6, "mm"), lwd = 3,
+          comb_order=comb_order.ko,
+          set_order = c("KO Up", "KO Down", "FSD-1 Target", "Development Up", "Development Down"),
+          comb_col = c("#ef8a62", "#ef8a62",  "#ef8a62", "#ef8a62", "#ef8a62","#ef8a62", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf", "#67a9cf"),
+          height = unit(8, "cm"),
+          width= unit(12,"cm"),
+              top_annotation = HeatmapAnnotation(
+        "Gene \n Intersections" = anno_barplot(cs.ko, 
+            ylim = c(0, max(cs.ko)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = comb_col.ko), 
+            height = unit(10, "cm"),
+            width = unit(12, "cm"),
+            labels_gp = gpar(fontsize = 22),
+            axis_param = list(gp = gpar(fontsize = 20))
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90,
+        annotation_name_gp = gpar(fontsize = 24)),
+
+        left_annotation = rowAnnotation("Category" = anno_text(set_name(comb.ko), 
+            location = 0.9, 
+            gp = gpar(fontsize = 24),
+            just = "right",
+            height = unit(4, "cm"),
+            width = unit(8.5, 'cm'))),
+
+        right_annotation = rowAnnotation(
+        "Genes per Category (x1,000)" = anno_barplot(ss.ko, 
+            baseline = 0,
+            axis_param = list(
+                at = c(0, 1000, 2000, 3000),
+                labels = c(0, 1, 2, 3),
+                labels_rot = 0,
+                gp = gpar(fontsize = 22)),
+            labels_gp = gpar(fontsize = 22),
+            border = FALSE, 
+            gp = gpar(fill = "gray"),
+            width = unit(8, "cm")
+        ),
+        annotation_name_gp = gpar(fontsize = 24)),
+            show_row_names = FALSE)
+png(filename="./Plots/Fig4C_upset_ko.png", height= 600, width = 900)
+draw(upset2)    
+dev.off()
+
+```
+##Fig 4D: KO Volcano plot 
+
+```{r}
+##Use matrix of DE genes + FSD-1 targets to classify genes 
+#Reduce dataset by pulling out non-FSD1 + non-significant
+de_res_ko.volc <- de_res_ko.targets %>% filter(! cat == "not FSD-1&NS") %>% filter(! GeneID == "NCU09915")
+
+## add gene names for top 15 up + top 15 down genes, plus sad-2, per-1, and ame-1
+de_res_ko.targets.topup <- de_res_ko.volc %>% 
+  arrange(desc(avg.logFC)) %>% slice_head(n=15)
+
+de_res_ko.important.genes <- de_res_ko.volc %>% filter(GeneID %in% volcano_genes_both)
+
+de_res_ko.targets.top <- de_res_ko.volc %>% 
+  arrange((avg.logFC)) %>% slice_head(n=15) %>% bind_rows(de_res_ko.targets.topup, de_res_ko.important.genes)
+
+de_res_ko.volc <- de_res_ko.volc %>% left_join(NcGFF_df) %>%
+  mutate(GeneName = case_when(GeneID %in% de_res_ko.targets.top$GeneID ~ GeneName,
+                    TRUE ~ ""))
+# Create a basic volcano plot
+library(ggplot2)
+library(ggrepel)
+
+fsd1_cats = c("FSD-1&UP", "FSD-1&DOWN")
+de_res_ko2 <- de_res_ko.volc %>% 
+  mutate(cat = case_when(cat %in% fsd1_cats ~ "FSD-1", TRUE ~ cat)) %>% arrange(desc(cat))
+
+ko.volc <- ggplot(data = de_res_ko2, aes(x = avg.logFC, y = -log10(avg.FDR), col=cat, label=GeneName)) +
+    geom_point(size=2) +
+    geom_vline(xintercept = c(-2, 2), col = "gray", linetype = 'dashed') +
+    geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') + 
+    coord_cartesian(ylim = c(0, 125), xlim = c(-15, 15)) +
+    geom_text_repel(size = 7, color = "black", min.segment.length = 0,  max.overlaps = Inf, box.padding = 0.5, point.padding = 1, point.size =4) +
+  labs(color = '', #legend_title, 
+       x = expression("log"[10]~"("~italic(Delta~"fsd-1")~"dpf5/WT dpf5)[expression]"), y = expression("-log"[10]*"FDR")) + 
+       scale_color_manual(values = c("#9F79EE", "grey","#67a9cf", "#ef8a62"), 
+                       labels = str_wrap(c("FSD-1 Target", "Not significant", "non-FSD-1 Target, Down", "non-FSD-1 Target, Up"), width=12)) +
+  theme_classic(base_size = 26) +
+  theme(legend.spacing.y = unit(2, 'in')) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+    theme(
+    legend.key.size = unit(3, "cm"),
+    legend.key = element_rect(color = NA, fill = NA)
+    ) +
+  theme(legend.text = element_text(size=26)) +
+  guides(colour = guide_legend(override.aes = list(size=8)))
+
+   ggsave("./Plots/Fig4D_fsd1_KO_volcano.png", plot=ko.volc, width = 12, height = 10, unit="in",  dpi=400)
+
+```
+
+
+##Fig 4E: OX Upset Plot
+```{r}
+### Make an Upset plot from this info
+install.packages("ComplexHeatmap")
+install.packages("ggupset")
+library(ComplexHeatmap)
+library(ggplot2)
+library(tidyverse)
+library(ggupset)
+
+#Making a list of genes that meet each condition, then pivoting to matrix
+upset.ox.list = list('OX Up' = ox.up, 'OX Down' = ox.down, 'Development Up' = de_genes_up, 'Development Down' = de_genes_down, 'FSD-1 Target'=fsd1_targets)
+    ox.l <- list_to_matrix(upset.ox.list)
+
+#Put samples in desired order for plotting
+    upset.comb.ox = make_comb_mat(ox.l, mode = "distinct")
+     coms = data.frame(name = comb_name(upset.comb), size = comb_size(upset.comb))
+     coms = coms %>% arrange(desc(name))
+
+  #Selecting combinations with > 1 category, plus genes that are only up/down regulated in OX
+    ## ox up = 1XXXXX, ox down = 01XXX
+
+
+     # setting custom order --> putting the single combinations first, and then sorting by intersection size descending
+        comb.ox = upset.comb.ox[,c("10000", "10100", "10101", "10010", "10001", "10011", "01000", "01100", "01010", "01101", "01001", "01011")]
+        #write combination+intersection size to dataframe to check sizes
+          comb_order2 = data.frame(pos = 1:12, name = comb_name(comb.ox), size =comb_size(comb.ox))
+
+combs = c("10000", "10100", "10101", "10010", "10001", "10011", "01000", "01100", "01010", "01101", "01001", "01011")
+ss.ox = set_size(comb.ox)
+cs.ox = comb_size(comb.ox)
+          comb_col.ox = c("#e9a3c9", "#e9a3c9", "#e9a3c9",  "#e9a3c9", "#e9a3c9", "#e9a3c9","#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a")
+
+upset=    UpSet(comb.ox,
+          pt_size = unit(6, "mm"), lwd = 3,
+          comb_order=comb_order2,
+          set_order = c("OX Up", "OX Down", "FSD-1 Target", "Development Up", "Development Down"),
+          comb_col = c("#e9a3c9", "#e9a3c9", "#e9a3c9",  "#e9a3c9", "#e9a3c9", "#e9a3c9","#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a", "#a1d76a"),
+          height = unit(8, "cm"),
+          width= unit(12,"cm"),
+
+          top_annotation = HeatmapAnnotation(
+        "Gene \n Intersections" = anno_barplot(cs.ox, 
+            ylim = c(0, max(cs.ox)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = comb_col.ox), 
+            height = unit(10, "cm"),
+            width = unit(12, "cm"),
+            labels_gp = gpar(fontsize = 22),
+            axis_param = list(gp = gpar(fontsize = 20))
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90,
+        annotation_name_gp = gpar(fontsize = 24)),
+
+        left_annotation = rowAnnotation("Category" = anno_text(set_name(comb.ox), 
+            location = 0.9, 
+            gp = gpar(fontsize = 24),
+            just = "right",
+            height = unit(4, "cm"),
+            width = unit(8.5, 'cm'))),
+
+        right_annotation = rowAnnotation(
+        "Genes per Category (X1,000)" = anno_barplot(ss.ox, 
+            baseline = 0,
+            axis_param = list(
+                at = c(0, 1000, 2000, 3000),
+                labels = c(0, 1, 2, 3),
+                labels_rot = 0,
+                gp = gpar(fontsize = 22)),
+            labels_gp = gpar(fontsize = 22),
+            border = FALSE, 
+            gp = gpar(fill = "gray"),
+            width = unit(8, "cm")
+        ),
+        annotation_name_gp = gpar(fontsize = 24)),
+            show_row_names = FALSE)
+png(filename="./Plots/Fig4E_OX_upset.png", height= 600, width = 900)
+draw(upset)    
+dev.off()
+```
+##Fig 4F: OX Volcano Plot
+```{r}
+##Use matrix of DE genes + FSD-1 targets to classify genes 
+#Reduce dataset by pulling out non-FSD1 + non-significant
+de_res_ox.targets <- de_res_ox.targets %>% 
+  filter(!cat =="not FSD-1&NS") %>% filter(! GeneID == "NCU09915")
+
+## add gene names for top 15 up + top 15 down genes, plus relevant targets. keeping only the top hits + named genes (NCU02087 + NCU05134). Also adding ame-1, sad-2, and per-1. ame-1 is not named in the GFF and is not a direct target (see below), so manually overwriting the annotation.
+de_res_ox.targets.topup <- de_res_ox.targets %>% arrange(desc(logFC)) %>% slice_head(n=15)
+de_res_ox.targets.ame1 <- de_res_ox.targets %>% filter(GeneID == "NCU01672")
+
+de_res_ox.targets.top <- de_res_ox.targets %>% arrange((logFC)) %>% slice_head(n=15) %>% bind_rows(de_res_ox.targets.topup, de_res_ox.targets.ame1)
+
+  # pull gene names from gff
+  NcGFF <- read.table("../NcGenome/fungiDB_GFFtoGTF_conversion.gtf", sep="\t")
+  NcGFF <- NcGFF %>% filter(V3 == "protein_coding_gene") 
+  NcGFF$GeneID <- str_extract(NcGFF$V9, "NCU[0-9]{5}")
+  NcGFF$Name <- str_extract(NcGFF$V9, "Name .* ;?")
+    NcGFF$Name <- gsub("Name ","",NcGFF$Name)
+    NcGFF$Name <- gsub(";.*","",NcGFF$Name)
+
+    #    NcGFF_df <- NcGFF %>% mutate(GeneName = case_when(is.na(Name) ~ GeneID,
+    #                                                  !is.na(Name) ~ Name)) %>%
+    NcGFF_df <- NcGFF %>% mutate(GeneName = case_when(GeneID == "NCU05134" ~ GeneID,
+                                                      GeneID == "NCU02087" ~ GeneID,
+                                                      GeneID == "NCU01672" ~ "ame-1",
+                                                      TRUE ~ Name)) %>%
+                                   dplyr::select(GeneID, GeneName)
+    
+#Merge gene name info with matrix of expression, then remove gene names if not in the top/bottom 15  
+de_res_ox.targets2 <- de_res_ox.targets %>% left_join(NcGFF_df) %>%
+  mutate(GeneName = case_when(GeneID %in% de_res_ox.targets.top$GeneID ~ GeneName,
+                    TRUE ~""))
+  de_res_ox.targets.top <- de_res_ox.targets.top %>% left_join(NcGFF_df)
+  
+  important_genes = c("NCU01672", "NCU03584", "NCU04294")
+# mutate cat column to simplify for FSD-1 targets
+fsd1_cats = c("FSD-1&UP", "FSD-1&DOWN")
+de_res_ox.targets2 <- de_res_ox.targets2 %>% mutate(cat = case_when(cat %in% fsd1_cats ~ "FSD-1", TRUE ~ cat)) %>% arrange(desc(cat))
+# Create a volcano plot
+library(ggplot2)
+library(ggrepel)
+
+ox.volc <- ggplot(data = de_res_ox.targets2, aes(x = logFC, y = -log10(FDR), col=cat, label=GeneName)) +
+    geom_point(size=2) +
+    geom_vline(xintercept = c(-2, 2), col = "gray", linetype = 'dashed') +
+    geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') + 
+    coord_cartesian(ylim = c(0, 400), xlim = c(-15, 15)) +
+    geom_text_repel(size = 7, color = "black", min.segment.length = 0,  max.overlaps = Inf, box.padding = 0.5, point.padding = 1, point.size =4) +
+  labs(color = '', #legend_title, 
+       x = expression("log"[10]~"("~italic("fsd-1")~"OX/WT Hyphae)[expression]"), y = expression("-log"[10]*"FDR")) + 
+       scale_color_manual(values = c("#9F79EE", "grey", "#7fbf7b", "#e9a3c9"), 
+                       labels = str_wrap(c("FSD-1 Target", "Not significant", "non-FSD-1 Target, Down", "non-FSD-1 Target, Up"), width=12)) +
+  theme_classic(base_size = 26) +
+    theme_classic(base_size = 26) +
+  theme(legend.spacing.y = unit(2, 'in')) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+    theme(
+    legend.key.size = unit(3, "cm"),
+    legend.key = element_rect(color = NA, fill = NA)
+    ) +
+  theme(legend.text = element_text(size=26)) +
+  guides(colour = guide_legend(override.aes = list(size=8)))
+
+ox.volc
+   ggsave("./Plots/Fig4F_fsd1_ox_volcano.png", plot=ox.volc, width = 12, height = 10, unit="in",  dpi=400)
+```
+
+#Figure 5: Regulatory nodes. This section combines the results of OX and KO results to identify genes that are "positively" regulated by FSD-1 (causing them to be DOWNREGULATED in KO and UPREGULATED in OX) and "negatively" regulated by FSD-1 (causing them to be UPREGULATED in KO and DOWNREGULATED in OX).
+
+##Combine datasets to create nodes, using dataframes used to make UpSet plots
+```{r}
+all.de.results <- de_res_ox.upset %>% 
+  dplyr::select(GeneID, Category, sig) %>% 
+  rename("OX.Category" = Category, "Sig.OX" = sig) %>% 
+  left_join(de_res_ko.upset, by="GeneID") %>%
+  dplyr::select(-avg.logFC, -avg.FDR) %>%
+  rename("Category"=Category, "Sig.KO"=sig)
+
+#Filter direct targets (FSD-1 targets)
+direct.regulated = all.de.results %>%
+  filter((Category == "FSD-1 target" & Sig.OX != "NS" | Category == "FSD-1 target" & Sig.KO !="NS")) 
+#Make a bed file - will use for deepTools heatmaps
+Nc_Genes <- read.table("../NcGenome/FungiDB-68_NcrassaOR74A.gff", sep="\t")
+
+direct.regulated.bed <- direct.regulated %>% 
+  left_join(Nc_Genes, by=join_by('GeneID' == 'V4')) %>% 
+  filter(! is.na(V1)) %>% 
+  dplyr::select(V1, V2, V3, GeneID)
+
+  write.table(direct.regulated.bed, file = "./ChIPseq/fsd1_directregulated_targets.bed", sep="\t", quote=FALSE, row.names = FALSE, col.names=FALSE)
+
+indirect.regulated = all.de.results %>%
+  filter(Category == "not FSD-1 target" & Sig.OX != "NS" & Sig.KO != "NS")
+
+all.regulated = rbind(direct.regulated, indirect.regulated)
+ 
+positive.node = all.regulated %>% 
+  filter(Sig.OX == "UP" | Sig.KO == "Down") 
+write.table(positive.node, file = "./RNAseq_Output/DE_Results/FSD1_Positive_Node.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+negative.node = all.regulated %>% 
+  filter(Sig.OX == "DOWN" | Sig.KO == "UP") 
+write.table(negative.node, file = "./RNAseq_Output/DE_Results/FSD1_Negative_Node.txt", sep="\t", quote=FALSE, row.names=FALSE)
+
+positive.indirect = intersect(up.ox, down.ko)
+  
+upset.ox.list = list('OX Induced' = ox.up, 
+                     'OX Repressed' = ox.down, 
+                     'Development Induced' = de_genes_up, 
+                     'Development Repressed' = de_genes_down, 
+                     'FSD-1 Target'=fsd1_targets)
+```
+
+##Fig 5A: Positive Node Venn Diagram
+```{r Fig 5A}
+## make venn diagrams to represent each node
+library(ggvenn)
+
+pos.list = list("FSD-1.Target" = fsd1_targets, "OX Up"= ox.up, "KO Down" = ko.down)
+
+png("./Plots/Fig5A_fsd1_Venn_PosNode.png",width=12,height=12,units="cm",res=1200)
+  ggvenn(pos.list, stroke_linetype = 1, stroke_size = 0.5, fill_color=c("#9F79EE" , "#e9a3c9", "#67a9cf"), show_counts=TRUE, show_percentage=TRUE, text_size = 4.5, padding = 0, set_name_size = 6)
+
+dev.off()
+```
+
+##Fig 5B: Negative Node Venn Diagram
+```{r Fig 5B}
+neg.list = list("FSD-1.Target" = fsd1_targets, "OX Down"= ox.down, "KO Up" = ko.up)
+
+png("./Plots/Fig5B_fsd1_Venn_NegNode.png",width=12,height=12,units="cm",res=1200)
+  ggvenn(neg.list, stroke_linetype = 1, stroke_size = 0.5, fill_color=c("#9F79EE" , "#ef8a62", "#7fbf7b"), show_counts=TRUE, show_percentage=TRUE, text_size = 4.5, padding = 0, set_name_size = 6)
+dev.off()
+
+
+```
+
+##Fig 5C: Heatmap of L2FC of genes in each cluster
+```{r 5C}
+library(ComplexHeatmap)
+library(circlize)
+
+#Take L2FC from OX and KO samples, and set nonsignificant samples to 0.1
+de_res_ko_adj <- de_res_ko %>% 
+  rename("KO.logFC" = avg.logFC) %>% 
+  mutate(KO.logFC = case_when(avg.FDR > 0.05 ~ 0.1, TRUE ~ KO.logFC))
+
+de_res_ox_adj <- de_res_ox %>%
+  mutate(OX.logFC = case_when(FDR > 0.05 ~ 0.1, TRUE ~ logFC)) %>%
+  dplyr::select(-logFC)
+
+de_res <- de_res_ko_adj %>% left_join(de_res_ox_adj) 
+
+##Select only genes that are significant in at least one or the other sample
+de_res_sig <- de_res %>%
+  filter(avg.FDR < 0.05 | FDR < 0.05) %>%
+  filter(abs(KO.logFC) > 2 | abs(OX.logFC) > 2) %>%
+  dplyr::select(GeneID, KO.logFC, OX.logFC)
+
+##For order of rows, find the difference between OX and KO logFC then sort by this value
+de_res_sig$totalfc = de_res_sig$KO.logFC - de_res_sig$OX.logFC
+
+de_res_sig <- de_res_sig %>%
+  arrange(desc(totalfc), .by_group = TRUE) %>%
+  column_to_rownames(var="GeneID") %>% 
+  dplyr::select(-totalfc)
+
+de_res_mat = as.matrix(de_res_sig)[,1:2]
+
+##Set scale
+quantile(de_res_mat, c(0.01, 0.1, 0.5, 0.99))
+col_fun2 <- circlize::colorRamp2(c(-8, 0, 0.1, 8), c("#7CCD7C", "gray96", "gray96", "#C1447EFF"))
+
+##Plot heatmap
+hmap2 <- Heatmap(de_res_mat, col = col_fun2, 
+                    cluster_columns = F, show_row_names = FALSE, show_column_names = TRUE, show_column_dend = FALSE, row_km = 3,
+                    show_row_dend = FALSE, cluster_rows = FALSE,
+                    row_gap = unit(2, "mm"),
+                    row_title = "FSD-1-Regulated Genes",
+                    row_title_side = "left", row_title_gp = gpar(fontsize = 20),
+                    heatmap_legend_param = list(
+                      col_fun=col_fun2, title = expression("log "[2]~"(Fold Change vs. WT)"), 
+                      legend_width = unit(4,"cm"),legend_height=unit(8,'cm'), 
+                      title_position = "leftcenter-rot", border = "black",
+                      labels_gp= gpar(fontsize = 20), title_gp= gpar(fontsize = 20)),
+#                    left_annotation = ha2,
+                    column_names_rot = 45, column_names_gp = grid::gpar(fontsize = 20),
+                    column_labels = c(expression(italic(Delta~fsd-1)), expression(italic(fsd-1)~"OX")),
+                    height = unit(20, 'cm'), width=unit(10, 'cm'), border="black")
+
+png("./Plots/Fig5C_FSD1nodes_hmap.png", width = 400, height = 800)
+draw(hmap2)
+dev.off()
+
+
+write.table(de_res_mat, file="./RNAseq_Output/DE_Results/IndirectTargets_l2fc.txt", sep="\t", quote=FALSE)
+```
+
+#Figure 6: Analysis of A-to-I editing events.
+See https://github.com/abbydeaven/Call_AtoI_Editing/tree/main for full process of identifying and processing A-to-I editing events.
+```{r}
+BiocManager::install(c("GenomicRanges","ChIPseeker"))
+library(tidyr)
+library(GenomicRanges)
+library(ChIPseeker)
+install.packages("archive")
+library(archive)
+
+### Read edit files from FSD-1 samples
+edit_files_fwd <- list.files(path = "./EditTables/fsd1_MapToOX2gDNA", pattern = "*_sense_all.txt", full.names = T, recursive = F)
+edit_files_rev <- list.files(path = "./EditTables/MapToOX2gDNA", pattern = "*antisense_all.txt", full.names = T, recursive = F)
+  
+#Creating count matrix of geneID and loci:
+edits.fwd <- readr::read_tsv(edit_files_fwd, id = "file_name", col_names=TRUE)
+edits.rev <- readr::read_tsv(edit_files_rev, id = "file_name", col_names=TRUE)
+
+#For some reason, the quality cutoff (Coverage-q) is coming out different for forward and reverse samples even though the settings are the same. Renaming this column to just "coverage" in both so they can be merged.
+    colnames(edits.fwd) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency", "gCoverage", "gMeanQ", "gBaseCount[A,C,G,T]", "gAllSubs", "gFrequency")
+    colnames(edits.rev) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency", "gCoverage", "gMeanQ", "gBaseCount[A,C,G,T]", "gAllSubs", "gFrequency")
+    
+#Correct strand column
+    edits.fwd$Strand = "+"
+    edits.rev$Strand = "-"
+
+#fix reverse to have same min coverage
+edits <- rbind(edits.fwd, edits.rev)
+
+### Read edit files from SRR samples
+edit_files_fwd.srr <- list.files(path = "./EditTables/SRR_MapTo_gDNA", pattern = "*_sense.txt", full.names = T, recursive = F)
+edit_files_rev.srr <- list.files(path = "./EditTables/SRR_MapTo_gDNA", pattern = "*antisense.txt", full.names = T, recursive = F)
+
+#Creating matrix matrix of geneID and edit information. Same as above, changing Coverage-q column to just "Coverage" due to glitch
+edits.fwd.srr <- readr::read_tsv(edit_files_fwd.srr, id = "file_name", col_names=TRUE)
+  colnames(edits.fwd.srr) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency", "gCoverage", "gMeanQ", "gBaseCount[A,C,G,T]", "gAllSubs", "gFrequency")
+edits.rev.srr <-readr::read_tsv(edit_files_rev.srr, id = "file_name", col_names=TRUE)
+  colnames(edits.rev.srr) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency", "gCoverage", "gMeanQ", "gBaseCount[A,C,G,T]", "gAllSubs", "gFrequency")
+
+    edits.fwd.srr$Strand = "+"
+    edits.rev.srr$Strand = "-"
+
+edits.srr <- rbind(edits.fwd.srr, edits.rev.srr)
+
+#merge edit tables together
+all.edits <- rbind(edits, edits.srr)
+
+# strip off extra parts of name
+all.edits$file_name = gsub("./EditTables/fsd1_MapToOX2gDNA/", "", all.edits$file_name)
+all.edits$file_name = gsub("./EditTables/SRR_MapTo_gDNA/", "", all.edits$file_name)
+
+all.edits$group = gsub("_[a-z]*sense_*[a-z]*.txt", "", all.edits$file_name)
+all.edits <- all.edits %>% filter(group != '156_fsd1GFP_OX2')
+
+## add param to group samples by their stage (for WT development samples) or genotype (for FSD-1 OX/KO)
+
+oe <- paste0("OE", c(1,2,3,4))
+wt <- paste0("WT", 1:4)
+cm <- paste0("CM", c(2,3,4, 5))
+cwt <- paste0("CWT", 1:5)
+
+all.edits <- all.edits %>% mutate(Stage = case_when(
+  group == "SRR5177521" | group == "SRR5177522" ~ "dpf6",
+  group == "SRR5177523" | group == "SRR5177524" ~ "dpf5",
+  group == "SRR5177525" | group == "SRR5177526" ~ "dpf4",
+  group == "SRR5177527" | group == "SRR5177528" ~ "dpf3",
+  group == "SRR5177529" | group == "SRR5177530" ~ "hyph",
+  group == "SRR5177517" | group == "SRR5177518" ~ "stc1",
+  group == "SRR5177519" | group == "SRR5177520" ~ "sad1",
+  group %in% oe ~ "OX_hyph",
+  group %in% wt ~ "WT_hyph",
+  group %in% cm ~ "KO_dpf5",
+  group %in% cwt ~ "WT_dpf5", 
+  ))
+                                                                                       ##Filter dataset to only include edits on core chromosomes, not mt genome or other contigs
+edits_filt <- all.edits %>% filter(Region %in% core.chroms)  %>% mutate(locus = paste(Region, Position, Strand, sep=".")) 
+
+##Removing the fsd-1 locus, rid-1, and the his-3 SNP
+edits_fsd1 <- edits_filt %>% filter(Region == "CM002239.1" & between(Position,5296170, 5303095))
+edits_filt <- edits_filt %>% filter(! locus %in% edits_fsd1)
+
+##Filter editing sites to remove any genomic SNPs - aka anything that has a detectable mutation in the gDNA columns
+edits_dnafilt <- edits_filt %>% filter(gAllSubs =="-") %>% filter(gCoverage !="-")
+
+##Remove OE3, similar to RNA-seq analysis above
+edits_dnafilt <- edits_filt %>% filter(! group == "OE3")
+
+##QC step - plot editing frequency to choose a maximum cutoff
+ggplot(edits_dnafilt, aes(x=Frequency)) + geom_histogram()
+
+##Remvoing any sites with an editing frequency > 0.9 to remove artefacts/sequencing errors 
+edits_freqfilt <- edits_dnafilt %>% filter(Frequency < 0.9)
+
+##Split the basecount column to obtain individual SNP frequencies
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub("\\[", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub("\\]", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub(" ", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+
+edits_split <- separate_wider_delim(edits_freqfilt, `BaseCount[A,C,G,T]`, delim=",", names=c("A", "C", "G", "T"))
+
+
+edits_split$A = as.numeric(edits_split$A)
+edits_split$C = as.numeric(edits_split$C)
+edits_split$G = as.numeric(edits_split$G)
+edits_split$T = as.numeric(edits_split$T)
+
+
+
+# Separate individual substitution frequencies
+edits_split_sep <- edits_split %>%
+#  mutate(AC = case_when(Reference == "A" ~ C/Coverage, TRUE ~ 0)) %>%
+  mutate(AG = case_when(Reference == "A" ~ G/Coverage, TRUE ~ NA))
+#  mutate(AT = case_when(Reference == "A" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(CA = case_when(Reference == "C" ~ A/Coverage, TRUE ~ 0)) %>%
+#  mutate(CG = case_when(Reference == "C" ~ G/Coverage, TRUE ~ 0)) %>%
+#  mutate(CT = case_when(Reference == "C" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(GA = case_when(Reference == "G" ~ A/Coverage, TRUE ~ 0)) %>%
+#  mutate(GC = case_when(Reference == "G" ~ C/Coverage, TRUE ~ 0)) %>%
+#  mutate(GT = case_when(Reference == "G" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(TA = case_when(Reference == "T" ~ A/Coverage, TRUE ~ 0)) %>%
+#  mutate(TC = case_when(Reference == "T" ~ C/Coverage, TRUE ~ NA))
+#  mutate(TG = case_when(Reference == "T" ~ G/Coverage, TRUE ~ 0))
+
+#Filter to only include A-to-I edits
+atoi_edits <- edits_split_sep %>% filter(AllSubs == "AG")
+
+#Summarize editing frequencies
+atoi_summary = atoi_edits %>% 
+  group_by(Stage) %>% 
+  summarize(reps = n_distinct(group), 
+            total_perrep = sum(G)/(n_distinct(group)),
+            mededits = median(Frequency), 
+            nsites = n()/n_distinct(group))
+
+write.table(atoi_summary, file="./EditingResults/AtoI_Editing_Summary.txt")
+
+
+stage.table <- atoi_edits %>% dplyr::select(group, Stage) %>% distinct(group, .keep_all = TRUE)
+
+```
+
+##Write out each stage, condense to consensus editing events, and annotate editing levels.
+This method groups replicates, then identifies the editing sites that are present in more than 2 replicates to create a "conserved" list. The editing frequency is then calculated across replicates.
+
+```{r}
+#BiocManager::install(c("GenomicRanges", "ChIPseeker"))
+library(ChIPseeker)
+library(GenomicRanges)
+## Write out each stage, condense to include only editing events found in more than one sample, and annotate overall editing levels of each sample
+  ##stage = overall group/genotype (eg, OE1, OE2, OE4 => all stage = OE)
+stages = atoi_summary$Stage
+samples = levels(factor(atoi_edits$group))
+
+## make an edit table to show all editing events across samples
+all.consensus.edits <- data.frame(matrix(ncol = 12, nrow = 0))
+colnames(all.consensus.edits) = c("locus", "sample", "seqnames", " start.x", "strand.x", "annotation", " geneId", " TotalG", " TotalReads", " TotalFreq", " GperRep", " AvgFreq")
+all.consensus.edits <- all.consensus.edits %>% mutate_all(as.character)
+
+
+## ID consensus edits by stage
+for (st in stages) {
+  print(st)
+  
+  # pull out number of reps per sample 
+  nreps =  atoi_summary %>% filter(Stage == st) %>% pull(reps)
+  # filter a-to-i edit dataset to pull out indicated stage, then sort by position
+  stage_edits <- atoi_edits %>% 
+    filter(Stage == st) %>% 
+    arrange(Region, Position)
+  
+  # assign to variable
+          assign(paste0("all.edits.", st), stage_edits)
+          
+          st
+  # create a "locus" variable to condense chromosome, edit site, and strand
+  stage_edits$locus = paste(stage_edits$Region, stage_edits$Position, stage_edits$Strand, sep=".")
+  
+  # group edits by position, identify the number of reps where this edit is present, and then filter out to only keep edits that are found in >2 reps
+  stage_conserved_edits <- stage_edits %>% 
+    group_by(locus, Strand, Region, Position) %>%
+    summarise(reps = n_distinct(file_name), 
+              TotalG = sum(G), 
+              TotalReads = sum(`Coverage`), 
+              GperRep = TotalG/reps, 
+              AvgFreq = mean(Frequency)) %>%
+    mutate(end = Position+1) %>%
+    dplyr::rename(chr = Region, start = Position) %>%
+    filter(reps >= 2) %>%
+    mutate(TotalFreq = TotalG/TotalReads) %>%
+    distinct(locus, .keep_all=TRUE)
+  
+  # write out to file
+  editfile = paste0("./EditingResults/ConsensusTables/", st, "_consensus_edits.txt")
+  write.table(stage_conserved_edits, file=editfile, sep="\t", row.names=FALSE, quote=FALSE)
+  assign(paste0("consensus.edits.", st), stage_conserved_edits)
+
+  # make a GRanges dataset to annotate peaks
+  edits.granges = stage_conserved_edits %>% dplyr::select(chr, start, end, Strand)
+  edits.granges <- GRanges(edits.granges)
+
+  # annotate peaks    
+  edit_anno <- annotatePeak(edits.granges, tssRegion=c(-500, 300),
+                         TxDb=Nc12_txdb)
+
+  # export annotation as df 
+  edit_anno_df <- as.data.frame(edit_anno)
+  # recreate locus column 
+  edit_anno_df$locus = paste(edit_anno_df$seqnames, edit_anno_df$start, edit_anno_df$Strand, sep=".")
+  
+  # remove duplicates
+  edit_anno_df <- edit_anno_df %>% group_by(locus) %>% distinct(locus, .keep_all=TRUE)
+
+  # join edit statistics with annotation information based on the locus column
+  edit_anno_df_join <- left_join(edit_anno_df, stage_conserved_edits, by="locus")
+  
+  # remove unneeded columns
+  edit_anno_df_join <- edit_anno_df_join %>% 
+    mutate(sample = st) %>% 
+    dplyr::select(sample, strand, seqnames, start.x, annotation, geneId, TotalG, TotalReads, TotalFreq, GperRep, AvgFreq) %>% 
+    ungroup()
+  
+  # join to summary dataframe
+   all.consensus.edits <- bind_rows(all.consensus.edits, edit_anno_df_join)
+   
+  # write to file 
+  annofile = paste0("./EditingResults/Anno/", st, "_anno.txt")
+  write.table(edit_anno_df_join, file=annofile, sep="\t", row.names=FALSE, quote=FALSE)
+      assign(paste0("anno.edits.", st), edit_anno_df_join)
+
+  # plot % of edits in genes/promoters etc.  
+  vennpie = paste0("./EditingResults/Plots/", st, "_vennpie.png")
+  png(vennpie, width = 600, height = 600)
+  plotAnnoPie(edit_anno, cex=1, ndigit = 1)
+    title(paste0(st, " edits annotation"), adj=0.2, line = -5)
+  dev.off()
+}
+
+##Create a list of conserved edits a different way  -- this one pulls out a-to-i edits in each individual replicate, annotates the editing sites, then filters to include only the conserved edits identified above.
+
+all.consensus.edits.grp <- data.frame(matrix(ncol = 11, nrow = 0))
+colnames(all.consensus.edits) = c("sample", "seqnames", " start.x", "stand.x",  "annotation", " geneId", " TotalG", " TotalReads", " TotalFreq", " GperRep", " AvgFreq")
+
+for (s in samples) {
+  print(s)
+#  nreps =  atoi_summary %>% filter(group == s) %>% pull(reps)
+  # Pull out editing sites for each individual replicate
+  sample_edits <- atoi_edits %>% filter(group == s) %>% arrange(Region, Position)
+          assign(paste0("all.edits.", s), sample_edits)
+
+
+  s.stage = as.character(levels(factor(sample_edits$Stage)))
+  
+  # Create locus variable to group edits by their chromosome and position
+  sample_edits$locus = paste(sample_edits$Region, sample_edits$Position, sample_edits$Strand, sep=".")
+  
+  # Summarize the editing frequency at each site
+  sample_conserved_edits <- sample_edits %>% group_by(locus, Region, Position) %>%
+    summarise(reps = n_distinct(group), 
+              TotalG = sum(G), 
+              TotalReads = sum(`Coverage`), 
+              GperRep = TotalG/reps, 
+              AvgFreq = mean(Frequency)) %>%
+    mutate(end = Position+1) %>%
+    dplyr::rename(chr = Region, start = Position) %>%
+#    filter(reps >= 2) %>%
+    mutate(TotalFreq = TotalG/TotalReads) %>%
+    mutate(Sample=s) %>%
+    distinct(locus, .keep_all=TRUE)
+  
+  # Fix strand variable
+  sample_conserved_edits$strand = str_extract(sample_conserved_edits$locus, ".{1}$")
+  
+  # Write out edits
+  editfile = paste0("./EditingResults/ConsensusTables/", s, "_edits.txt")
+  write.table(sample_conserved_edits, file=editfile, sep="\t", row.names=FALSE, quote=FALSE)
+      assign(paste0("consensus.edits.", s), sample_conserved_edits)
+
+  # Make GRanges matrix
+  edits.granges = sample_conserved_edits %>% dplyr::select(chr, start, end, strand)
+  edits.granges <- GRanges(edits.granges)
+
+  # annotate peaks    
+  edit_anno <- annotatePeak(edits.granges, tssRegion=c(-500, 300),
+                       TxDb=Nc12_txdb)
+
+  # export annotation as df 
+  edit_anno_df <- as.data.frame(edit_anno)
+  edit_anno_df$locus = paste(edit_anno_df$seqnames, edit_anno_df$start, edit_anno_df$strand, sep=".")
+  
+  # remove duplicates
+  edit_anno_df <- edit_anno_df %>% group_by(locus) %>% distinct(locus, .keep_all=TRUE)
+  
+  # join annotation with editing frequencies identified previously
+  edit_anno_df_join <- left_join(edit_anno_df, sample_conserved_edits, by="locus")
+  edit_anno_df_join<- edit_anno_df_join %>% 
+    mutate(sample = s) %>% 
+    dplyr::select(sample, seqnames, start.x, strand.x, annotation, geneId, TotalG, TotalReads, TotalFreq, GperRep, AvgFreq) 
+   
+      
+  # intersect w/ list of conserved edits identified in the previous chunk
+  consensusvar <- eval(parse(text=paste0('consensus.edits.',s.stage,'$locus')))
+  edit_anno_df_join.consens <- edit_anno_df_join %>% filter(locus %in% consensusvar)
+
+  # write to summary dataframe
+  all.consensus.edits.grp <- rbind(all.consensus.edits.grp, edit_anno_df_join.consens)
+}
+
+# Use the final grouped dataframe to figure out the frequency of editing at each site in each sample as well as the median editing frequency across the sample.
+
+nsites_persamples <- all.consensus.edits.grp %>% 
+  group_by(sample) %>% 
+  summarize(nsites=n(), 
+            mededits = median(TotalFreq)) %>% 
+  left_join(stage.table, join_by(sample == group)) %>% 
+  filter(!sample == "OE3")
+
+# Calculate mean # of editing sites + sem per stage
+median.edit.sites <- nsites_persamples %>% 
+  group_by(Stage) %>% 
+  summarize(meansites=mean(nsites), 
+            sem.sites=sd(nsites)/sqrt(n()), 
+            medianedits=median(mededits), 
+            sem.medianedits = sd(mededits)/sqrt(n()))
+
+# For plotting, select only fsd1 samples and put  in order by genotype
+fsd1_sample_list <- c("KO_dpf5", "OX_hyph", "WT_dpf5", "WT_hyph")
+
+fsd1.sample.edits <- median.edit.sites %>% filter(Stage %in% fsd1_sample_list)
+  fsd1.sample.edits$ord = c(2,4,1,3)
+  fsd1.sample.edits_ord <- fsd1.sample.edits %>% arrange(ord) %>% pull(Stage)
+
+# Manually rename rows
+fsd1.sample.edits$name = c("fsd-1 KO dpf5", "fsd-1 OX hyphae", "WT dpf5","WT hyphae")
+```
+
+##Fig 6A: Barplot of the number of editing sites in each sample
+```{r}
+install.packages("ggbreak")
+install.packages("ggpubr")
+
+library(ggbreak)
+library(patchwork)
+library(ggpubr)
+
+bar <- ggplot(fsd1.sample.edits, aes(x=reorder(name, ord), y=meansites)) +
+  geom_col(aes(fill=Stage), color="black") +
+  scale_fill_manual(values=c("#ef8a62",  "#e9a3c9","#67a9cf","#7fbf7b")) +
+  geom_errorbar(aes(ymin=meansites-sem.sites, ymax=meansites+sem.sites), width=0.3) +
+#  scale_x_discrete(labels=c("WT dpf5", "fsd-1 KO dpf5", "WT hyphae", "fsd-1 OX hyphae")) +
+  theme_classic(base_size=24) +
+  theme(legend.position = "none") +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+      labs(
+       x = "Stage",
+       y = "n(A-to-I Editing Sites)") +
+    theme(
+      axis.title= element_text(size=26),
+      panel.background = element_rect(color=NA, fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black",
+                                 linewidth = 1),
+      legend.title = element_text(size=26),
+      legend.text=element_text(size=26),
+      axis.text.x=element_text(angle=45, hjust=1, size=26), panel.spacing.x=unit(0.5, "lines"),
+      axis.text.y=element_text(size=26),
+      legend.spacing.y=unit(1.0, "cm")) +
+      guides(fill = guide_legend(byrow = TRUE))
+
+plot <- bar + scale_y_break(c(400, 1200), space = 0.1)
+
+plot
+ 
+ggsave("./Plots/6A_EditingBarplot.png", plot=plot, dpi=400, width=25, height=30, units="cm")
+
+
+```
+
+##Sort editing sites into categories based on their stage specificity  -- "all stages" = detected in dpf3 - dpf6; multistage = detected in 2-3 stages; stage-specific = present in only one WT stage. edits only detected in the mutants will go into the "mutant only" category (previously "unique")
+```{r}
+# Make sure that all replicates/samples are matched up
+# First make a modified table so that WT_dpf5 (our dpf5) is lumped in with dpf5 (published)
+
+stage.table2 <- stage.table
+stage.table2[5:7,2]="dpf5"
+
+all.consensus.edits.grp <- all.consensus.edits.grp %>% 
+  left_join(stage.table2, join_by(sample == group))
+
+wt_peri <- paste0('dpf',3:6)
+
+
+# Filter to only include WT samples 
+edited_sites <- all.consensus.edits.grp %>% 
+  group_by(locus) %>% 
+  filter(Stage %in% wt_peri)
+
+# Summarize by locus, then report how many samples have that site edited
+edited_sites_bystage <- edited_sites %>% group_by(locus) %>% summarise(n_detected = n_distinct(Stage)) ## n =11743
+  
+# Filter to remove sites that are only edited in one replicate 
+edited_sites_shared <- edited_sites_bystage %>% filter(n_detected >= 2) ## n=8696
+  
+# Create a table of these WT editing sites to feed back into RediTools
+WT_Editing_sites <- all.consensus.edits.grp %>% 
+  filter(locus %in% edited_sites_shared$locus) %>% 
+  distinct(locus, .keep_all=TRUE) %>% 
+  ungroup %>%
+    arrange(seqnames, start.x) %>%
+    dplyr::select(seqnames, start.x, strand.x, geneId) %>% 
+    mutate(source = "nc12", feature="snp", end=start.x+1, score=".",, frame=".") %>%
+    dplyr::select(seqnames, source, feature, start.x, end, score, strand.x, frame, geneId)
+
+WT_Editing_sites$geneId = paste0('gene_id "',WT_Editing_sites$geneId,'"; transcript_id "', WT_Editing_sites$geneId, '"')
+  
+write.table(WT_Editing_sites, file="./EditTables/DevelopmentEditingSites.gtf", sep="\t", col.names=FALSE, row.names=FALSE, quote=FALSE)
+  
+  ## Filter by strand then write out separate tables
+  WT_Editing_table <- WT_Editing_sites %>% select(seqnames, start.x, strand.x)
+  WT_Editing_table.f <- WT_Editing_table %>% 
+    filter(strand.x == "+")
+
+  write.table(WT_Editing_table.f, file="./EditTables/DevelopmentEditingSites_fwd.tab", sep="\t", col.names=FALSE, row.names=FALSE, quote=FALSE)
+
+  WT_Editing_table.r <- WT_Editing_table %>% 
+    filter(strand.x == "-")
+  write.table(WT_Editing_table.r, file="./EditTables/DevelopmentEditingSites_rev.tab", sep="\t", col.names=FALSE, row.names=FALSE, quote=FALSE)
+
+# extract all other editing sites and categorize based on their stage specificity
+site_specificity <- edited_sites_bystage %>%
+    mutate(Specificity = case_when(n_detected == 1 ~ "stage-specific",
+                                   between(n_detected, 2,3) ~ "multistage",
+                                   n_detected == 4 ~ "all stages"))
+  
+# left-join site specificity info back to dataframe of editing sites in fsd-1 samples
+fsd1_edits <- all.consensus.edits.grp %>% 
+  filter(Stage %in% fsd1_sample_list) %>% 
+  left_join(site_specificity, by="locus") %>% 
+  mutate(Specificity = case_when(is.na(Specificity) ~ "stage-specific", 
+                                 TRUE ~ Specificity)) %>% 
+  group_by(sample, Specificity)
+    
+fsd1_edit_summary <- fsd1_edits %>% group_by(Stage, Specificity) %>% summarize(n=n())
+  
+# set order of samples for plotting
+fsd1_edits <- fsd1_edits %>% 
+  mutate(ord = case_when(sample =="WT_dpf5" ~ 1, 
+                         sample=="KO_dpf5" ~ 2, 
+                         sample=="WT_hyph" ~3, 
+                         sample=="OX_hyph"~4)) %>% 
+  arrange(ord)
+```
+
+##Fig 6C: Boxplot of the frequency of each type of edit specificity
+```{r}
+#Setting distance between violins in plot
+dodge <- position_dodge(width = 1)
+###  plotting violin plot
+### this chunk is just for putting samples in the order that I want ###
+editing_boxplot <- fsd1_edits %>%
+  arrange(factor(Stage, levels = c("WT_dpf5", "KO_dpf5", "WT_hyph", "OX_hyph"))) %>%
+#  mutate(sample = fct(sample)) %>%
+  ggplot(aes(x=Stage, y=AvgFreq, fill=Specificity)) + 
+    geom_boxplot() +
+    labs(
+       x = "Sample",
+       y = "A-to-I Editing Frequency") +
+    scale_fill_manual("Specificity",values = c("#BCEE68", "#009ACD", "indianred2", "#DA70D6")) +
+    scale_x_discrete(labels=c("WT dpf5", "fsd-1 KO dpf5", "WT hyphae", "fsd-1 OX hyphae")) +
+    theme_classic() +
+    theme(
+      legend.position="right",
+      axis.title= element_text(size=24),
+      panel.background = element_rect(color=NA, fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black",
+                                 linewidth = 1),
+      legend.title = element_text(size=24),
+      legend.text=element_text(size=22),
+      axis.text.x=element_text(angle=45, hjust=1, size=24), panel.spacing.x=unit(0.5, "lines"),
+      axis.text.y=element_text(size=24)) +
+    theme(legend.spacing.y = unit(2, 'in')) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+    theme(
+    legend.key.size = unit(1.5, "cm"),
+    legend.key = element_rect(color = NA, fill = NA)
+    ) 
+      
+editing_boxplot
+ggsave("./Plots/Fig6C_Editing_Boxplot.png", plot=editing_boxplot, dpi=400, width=25, height=25, units="cm")
+```
+
+##Fig 6B: Upset plot to determine the abundance of different specificity types
+```{r}
+# Pull the frequency of each category
+allstage = site_specificity %>% filter(Specificity == "all stages") %>% pull(locus)
+multistage = site_specificity %>% filter(Specificity == "multistage") %>% pull(locus)
+stagespec = site_specificity %>% filter(Specificity == "stage-specific") %>% pull(locus)
+
+unique.sites <- fsd1_edits %>% 
+  filter(! locus %in% site_specificity$locus) %>%
+  pull(locus)
+  unique = data.frame(locus = unique.sites)
+
+
+ko.edits = fsd1_edits %>% filter(Stage == "KO_dpf5") %>% pull(locus)
+ox.edits = fsd1_edits %>% filter(Stage == "OX_hyph") %>% pull(locus)
+dpf5.edits = fsd1_edits %>% filter(Stage == "WT_dpf5") %>% pull(locus)
+hyph.edits = fsd1_edits %>% filter(Stage == "WT_hyph") %>% pull(locus)
+
+# Compare categories to make matrix
+edit.upset.list = list("fsd1 KO"=ko.edits, 
+                       "fsd1 OX"=ox.edits, 
+                       "All Stages" = allstage, 
+                       "Multistage" = multistage,
+                       "Stage-Specific"=stagespec,
+                       "Unique"=unique.sites)
+
+# Setting up Upset plot
+library(ComplexHeatmap)
+
+edit.l <- list_to_matrix(edit.upset.list)
+  edit.upset.comb = make_comb_mat(edit.l, mode = "distinct")
+  
+# Get rid of singletons
+  ed.up <- edit.upset.comb[comb_degree(edit.upset.comb) >= 2]
+
+# Set custom order of samples
+    coms = data.frame(name = comb_name(edit.upset.comb), 
+                      size = comb_size(edit.upset.comb))
+    coms = coms %>% arrange(desc(name))
+    
+
+ed.com = edit.upset.comb[, c("111000", "110100", "110010",
+                             "100001", "100010", "100100", "101000",
+                             "010010", "010001","010100", "010100")]
+     
+
+ss.ed = set_size(ed.com)
+cs.ed = comb_size(ed.com)
+          comb_col.ed = c(rep("#a0a7cd", 3), rep("#EF8A62", 4), rep("#e9a3c9", 4))
+
+upset.ed=    UpSet(ed.com,
+          pt_size = unit(6, "mm"), lwd = 3,
+#          comb_order=comb_order,
+          set_order = c("fsd1 KO", "fsd1 OX", "All Stages", "Multistage", "Stage-Specific", "Unique"),
+          comb_col = comb_col.ed,
+          height = unit(8, "cm"),
+          width= unit(12,"cm"),
+
+              top_annotation = HeatmapAnnotation(
+        "Edit Site \n Intersections" = anno_barplot(cs.ed, 
+            ylim = c(0, max(cs.ed)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = comb_col.ed), 
+            height = unit(10, "cm"),
+            width = unit(12, "cm"),
+            labels_gp = gpar(fontsize = 22),
+            axis_param = list(gp = gpar(fontsize = 20))
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90,
+        annotation_name_gp = gpar(fontsize = 24)),
+
+        left_annotation = rowAnnotation("Category" = anno_text(set_name(ed.com), 
+            location = 0.9, 
+            gp = gpar(fontsize = 24),
+            just = "right",
+            height = unit(4, "cm"),
+            width = unit(8.5, 'cm'))),
+
+        right_annotation = rowAnnotation(
+        "Edit Sites (X1,000)" = anno_barplot(ss.ed, 
+            baseline = 0,
+            axis_param = list(
+                at = c(0, 1000, 2000, 3000),
+                labels = c(0, 1, 2, 3),
+                labels_rot = 0,
+                gp = gpar(fontsize = 22)),
+            labels_gp = gpar(fontsize = 22),
+            border = FALSE, 
+            gp = gpar(fill = "gray"),
+            width = unit(8, "cm")
+        ),
+        annotation_name_gp = gpar(fontsize = 24)),
+            show_row_names = FALSE)
+
+png(filename="./Plots/Fig6B_Upset_editing.png", height= 800, width = 900)
+draw(upset.ed)    
+dev.off()
+
+```
+
+## Below is some VERY messy extra code, enter with caution
+### Reading in consensus sites
+
+```{r}
+edit_files_consensus.f <- list.files(path = "./ConsensusEdits", pattern = "*_sense.txt", full.names = T, recursive = F)
+edit_files_consensus.r <- list.files(path = "./ConsensusEdits", pattern = "*_antisense.txt", full.names = T, recursive = F)
+  
+#Creating count matrix of geneID and loci:
+edits.cons.fwd <- readr::read_tsv(edit_files_consensus.f, id = "file_name", col_names=TRUE)
+edits.cons.rev <-readr::read_tsv(edit_files_consensus.r, id = "file_name", col_names=TRUE)
+
+min(edits.fwd$MeanQ)
+#fix reverse to have same min coverage
+edits.cons.rev.fix <- edits.cons.rev %>% mutate(MeanQ = as.numeric(MeanQ)) %>% filter(MeanQ >= 30) %>% dplyr::rename('Coverage-q30'='Coverage-q25') %>% dplyr::rename('gCoverage-q30'="gCoverage-q25")
+
+colnames(edits.rev.fixed) = colnames(edits.cons.fwd)
+edits_consensus <- rbind(edits.cons.fwd, edits.cons.rev.fix)
+#removing DNA cols - will manually fill
+
+#adding colnames - should have come out with REDItools but didn't for some reason
+#colnames(edits) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency")
+
+# strip off extra parts of name
+edits_consensus$file_name = gsub("./ConsensusEdits/", "", edits_consensus$file_name)
+## add grouping param
+edits_consensus$group = str_extract(edits_consensus$file_name, ".*_")
+edits_consensus$group = gsub("_","", edits_consensus$group)
+
+
+consensus_files = levels(factor(edits_consensus$file_name))
+full.edit.files = levels(factor(atoi_edits$file_name))
+
+missingfiles = setdiff(full.edit.files, consensus_files)
+missingfiles= str_extract(missingfiles, ".*_")
+missingfiles= gsub("_","", missingfiles)
+write.table(missingfiles, file = "./EditingResults/missingaccessions.txt", quote=FALSE, sep="\t", row.names=FALSE, col.names = FALSE)
+
+
+oe <- paste0("OE", c(1,2,3,4))
+wt <- paste0("WT", 1:4)
+cm <- paste0("CM", c(2,3,4, 5))
+cwt <- paste0("CWT", 1:5)
+
+#extract dna variant calls
+#edits_dna <- edits %>% filter(file_name %in% dna) %>% filter(Frequency > 0.03) %>% mutate(locus = paste(Region, Position, Strand, sep="."))
+
+edits_consensus <- edits_consensus %>% mutate(Stage = case_when(
+  group == "SRR5177517" | group == "SRR5177518" ~ "stc1",
+  group == "SRR5177519" | group == "SRR5177520" ~ "sad1",
+  group == "SRR5177521" | group == "SRR5177522" ~ "dpf6",
+  group == "SRR5177523" | group == "SRR5177524" ~ "dpf5",
+  group == "SRR5177525" | group == "SRR5177526" ~ "dpf4",
+  group == "SRR5177527" | group == "SRR5177528" ~ "dpf3",
+  group == "SRR5177529" | group == "SRR5177530" ~ "hyph",
+  group %in% oe ~ "OX_hyph",
+  group %in% wt ~ "WT_hyph",
+  group %in% cm ~ "KO_dpf5",
+  group %in% cwt ~ "WT_dpf5"
+  ))
+
+
+                                                                                          
+edits_consensus <- edits_consensus %>% filter(Reference == "A")  %>% mutate(locus = paste(Region, Position, Strand, sep=".")) 
+
+## if an edit is detected on both strands, sum the reads and take the frequency from that
+editing_mat <- edits_consensus %>% dplyr::select(locus, `Coverage-q30`, Frequency, group) %>% group_by(group, locus)
+
+editing_mat_single <- editing_mat %>% summarize(TotalFreq = sum(Frequency)/sum(`Coverage-q30`)) %>% mutate(TotalFreq=case_when(TotalFreq=="NA" ~ 0, TRUE ~ TotalFreq))
+
+editing_mat_wide <- editing_mat_single %>% pivot_wider(names_from = group, values_from = TotalFreq) %>% column_to_rownames(var="locus") %>% mutate_all(~replace(., is.na(.), 0)) 
+
+
+
+## make a PCA plot
+  if (!requireNamespace('remotes', quietly = TRUE))
+    install.packages('remotes')
+  remotes::install_github('kevinblighe/PCAtools')
+  install.packages('ggforce')
+  install.packages("paletteer")
+library(paletteer)
+  library(ggforce)
+
+fsd1_strains_pca <- prcomp(t(editing_mat_wide))
+fsd1_strains_pca_all <- fsd1_strains_pca$x %>%
+  as.data.frame() %>%
+  rownames_to_column(var="group") %>%
+  left_join(stage.table)
+
+fsd1_strains_pca_all <- fsd1_strains_pca_all %>% filter(Stage %in% fsd1_samples)
+
+cols = paletteer::palletteer_d("basetheme::clean")
+
+pca <- ggplot(fsd1_strains_pca_all, aes(x=PC1, y=PC2, color = Stage)) +
+  geom_point(size = 5) +
+  geom_vline(xintercept = 0, linetype=2) +
+  geom_hline(yintercept = 0, linetype=2) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+      labs(
+       x = "Condition",
+       y = "A-to-I Editing Frequency") +
+  
+    theme(
+      legend.position="none",
+      axis.title= element_text(size=24),
+      panel.background = element_rect(color=NA, fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black",
+                                 linewidth = 1),
+      legend.text=element_text(size=24),
+      axis.text.x=element_text(angle=45, hjust=1, size=24), panel.spacing.x=unit(0.5, "lines"),
+      axis.text.y=element_text(size=24))
+
+
+pca
+
+
+
+## trying bcv through edgeR?
+# scaling everything up 1000 fold since edger expects integers
+editing_mat <- edits_consensus %>% dplyr::select(locus, `Coverage-q30`, Frequency, group) %>% group_by(group, locus)
+
+edit_muts = c("SRR5177517", "SRR5177518", "SRR5177519", "SRR5177520")
+dupes = c("SRR5177529", "SRR5177530", "SRR5177523", "SRR5177524")
+
+editing_mat_edger <- editing_mat %>% summarize(TotalFreq = sum(Frequency)/sum(`Coverage-q30`)) %>%
+  mutate(TotalFreq=case_when(TotalFreq=="NA" ~ 0, TRUE ~ TotalFreq)) %>%
+  mutate(TotalFreq = TotalFreq*1000) %>% 
+  filter(!group %in% edit_muts) %>%
+  filter(!group == "OE3") %>%
+  filter(!group %in% dupes)
+
+
+editing_mat_wide_edger <- editing_mat_edger %>% pivot_wider(names_from = group, values_from = TotalFreq) %>% column_to_rownames(var="locus") %>% mutate_all(~replace(., is.na(.), 0))
+
+
+stage.table2 <- stage.table %>% 
+  filter(!Stage == "dpf5") %>%
+  filter(!Stage == "hyph") %>%
+  mutate(Sample=case_when(
+  Stage == "KO_dpf5" ~ 'fsd1 KO dpf5', 
+  Stage == "OX_hyph" ~ "fsd1 OX hyphae", 
+  Stage == "WT_dpf5" ~ "dpf5", 
+  Stage == "WT_hyph" ~ "Hyphae",
+#  Stage == "hyph" ~ "Hyphae",
+  TRUE ~ Stage)) %>%
+  filter(! Stage == 'stc1') %>% 
+  filter(! Stage == "sad1") 
+  
+  dge_ox <- DGEList(counts = editing_mat_wide_edger, group = stage.table2$Sample)
+nrowdge_ox
+
+  stage### Filter out low-abundance genes and calculate normalization factors
+  keep_ox <- filterByExpr(y = dge_ox, min.count	= 5)
+  summary(keep_ox) ##  removes 826 genes 
+  dge_ox <- dge_ox[keep_ox, keep.lib.sizes=FALSE]
+  dge_ox$lib.size <- colSums(dge_ox$counts)
+  dge_ox_norm <- calcNormFactors(object = dge_ox)
+  print(dge_ox_norm$samples)
+
+  #normalizing and setting levels/design ###
+  design_mat_ox <- model.matrix(~ 0 + dge_ox$samples$group)
+  colnames(design_mat_ox) <- levels(dge_ox$samples$group)
+  D <- estimateCommonDisp(dge_ox_norm)
+  D <- estimateTagwiseDisp(D)
+  dge_ox_norm2 <- estimateGLMCommonDisp(dge_ox,design_mat_ox,verbose=TRUE)
+  
+  
+  dge_ox_norm2 <- estimateGLMTrendedDisp(dge_ox_norm2, design_mat_ox)
+  dge_ox_norm2 <-estimateGLMTagwiseDisp(dge_ox_norm2, design_mat_ox)
+  
+  plotBCV(dge_ox_norm2)
+  
+  q4 <- qualitative_hcl(8, palette = "Dynamic")
+  lev = dge_ox_norm2$samples$group
+mdsp <- plotMDS(dge_ox_norm2, method="bcv", col=q4, pch = 19 )
+mdsp
+
+mds <- plotMDS(dge_ox_norm2, method="bcv", col=q4, pch = 19, cex = 2, plot=FALSE)
+head(mds)
+summary(mds)
+mds_mat <- data.frame(group=rownames(mds$distance.matrix.squared), x=mds$x, y=mds$y)
+mds_mat <- mds_mat %>% left_join(stage.table2)
+
+
+library(paletteer)
+library(ggforce)
+
+head(mds_mat)
+
+mds_plot <- ggplot(mds_mat, aes(x=x, y=y, color = Sample)) +
+  scale_color_paletteer_d("basetheme::clean") +
+  geom_point(size = 5) +
+  geom_mark_circle(aes(color = as.factor(Sample)), legend=FALSE, expand=unit(5, "mm")) +   theme_classic() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+      labs(
+       x = "BCV distance 1 (37%)",
+       y = "BCV distance 2 (27%)") +
+    theme(
+      axis.title= element_text(size=22),
+      panel.background = element_rect(color=NA, fill = "white"),
+      plot.background = element_rect(fill = "white"),
+      axis.line = element_line(color = "black",
+                                 linewidth = 1),
+      legend.title = element_text(size=24),
+      legend.text=element_text(size=24),
+      axis.text.x=element_text(angle=45, hjust=1, size=24), panel.spacing.x=unit(0.5, "lines"),
+      axis.text.y=element_text(size=24),
+      legend.spacing.y=unit(1.0, "cm")) +
+      guides(fill = guide_legend(byrow = TRUE))
+
+    ggsave("C:/Users/abbyd/Documents/Research/Bioinformatics/PeakCallingTFs/Plots/Editing_BCV.png", plot=mds_plot, dpi=400, width=25, height=25, units="cm")
+
+mds_plot
+ ```
+  ```
+
+```
+
+
+
+
+
+### just for funsies, running on  FP data
+```{r}
+BiocManager::install(c("GenomicRanges","ChIPseeker"))
+library(tidyr)
+library(GenomicRanges)
+library(ChIPseeker)
+install.packages("archive")
+library(archive)
+Edit
+
+edit_files_fwd <- list.files(path = "C:/Users/abbyd/Documents/Research/Bioinformatics/PeakCallingTFs/EditTables/FP_EditTables", pattern = "*_sense_all.txt", full.names = T, recursive = F)
+
+edit_files_rev <- list.files(path = "C:/Users/abbyd/Documents/Research/Bioinformatics/PeakCallingTFs/EditTables/FP_EditTables", pattern = "*antisense_all.txt", full.names = T, recursive = F)
+  
+#Creating count matrix of geneID and loci:
+edits.fwd <- readr::read_tsv(edit_files_fwd, id = "file_name", col_names=TRUE)
+edits.rev <-readr::read_tsv(edit_files_rev, id = "file_name", col_names=TRUE)
+
+min(edits.fwd$MeanQ)
+#fix reverse to have same min coverage
+edits.rev.fixed <- edits.rev %>% mutate(MeanQ = as.numeric(MeanQ)) %>% filter(MeanQ >= 30) %>% dplyr::rename('Coverage-q30'='Coverage-q25')
+
+colnames(edits.rev.fixed) = colnames(edits.fwd)
+
+edits <- rbind(edits.fwd, edits.rev.fixed)
+
+#adding colnames - should have come out with REDItools but didn't for some reason
+#colnames(edits) = c("file_name", "Region",  "Position",  "Reference",  "Strand",  "Coverage",  "MeanQ",  "BaseCount[A,C,G,T]",  "AllSubs",  "Frequency")
+
+# strip off extra parts of name
+edits$file_name = gsub("C:/Users/abbyd/Documents/Research/Bioinformatics/PeakCallingTFs/EditTables/FP_EditTables/", "", edits$file_name)
+edits$file_name = gsub("[0-9]{3}-[0-9]{2,3}_cDNA_", "", edits$file_name)
+
+## add grouping param
+edits$group = str_extract(edits$file_name, "^.*?(?=_{1,2}Rep)")
+
+oe <- paste0("OE", c(1,2,3,4))
+wt <- paste0("WT", 1:4)
+cm <- paste0("CM", c(2,3,4, 5))
+cwt <- paste0("CWT", 1:5)
+
+#extract dna variant calls
+#edits_dna <- edits %>% filter(file_name %in% dna) %>% filter(Frequency > 0.03) %>% mutate(locus = paste(Region, Position, Strand, sep="."))
+
+edits <- edits %>% mutate(Stage = case_when(
+  group == "SRR5177521" | group == "SRR5177522" ~ "dpf6",
+  group == "SRR5177523" | group == "SRR5177524" ~ "dpf5",
+  group == "SRR5177525" | group == "SRR5177526" ~ "dpf4",
+  group == "SRR5177527" | group == "SRR5177528" ~ "dpf3",
+  group == "SRR5177529" | group == "SRR5177530" ~ "hyph",
+  group == "SRR5177517" | group == "SRR5177518" ~ "stc1",
+  group == "SRR5177519" | group == "SRR5177520" ~ "sad1",
+  group %in% oe ~ "OX_hyph",
+  group %in% wt ~ "WT_hyph",
+  group %in% cm ~ "KO_dpf5",
+  group %in% cwt ~ "WT_dpf5", 
+  
+  ))
+                                                                                          
+edits_filt <- edits %>% filter(Region %in% core.chroms)  %>% mutate(locus = paste(Region, Position, Strand, sep=".")) 
+
+## regions to mask -- fsd1 locus, his-3 SNP, rid-1
+edits_fsd1 <- edits_filt %>% filter(Region == "CM002239.1" & between(Position,5296170, 5303095))
+edits_filt <- edits_filt %>% filter(! locus %in% edits_fsd1)
+
+## remove mutant sites in gdna
+edits_dnafilt <- edits_filt %>% filter(gAllSubs =="-") %>% filter(gMeanQ !="-")
+
+## remove OE 3
+
+## plot frequency histogram
+ggplot(edits_dnafilt, aes(x=Frequency)) + geom_histogram()
+
+quantile(edits_dnafilt$Frequency, 0.80)
+## removing frequency > 0.95
+
+edits_freqfilt <- edits_dnafilt %>% filter(Frequency < 0.80)
+
+# split basecount column
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub("\\[", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub("\\]", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+edits_freqfilt$`BaseCount[A,C,G,T]`=gsub(" ", "", edits_freqfilt$`BaseCount[A,C,G,T]`)
+
+edits_split <- separate_wider_delim(edits_freqfilt, `BaseCount[A,C,G,T]`, delim=",", names=c("A", "C", "G", "T"))
+
+
+edits_split$A = as.numeric(edits_split$A)
+edits_split$C = as.numeric(edits_split$C)
+edits_split$G = as.numeric(edits_split$G)
+edits_split$T = as.numeric(edits_split$T)
+
+
+
+# Separate AG/TC edit frequencies
+edits_split_sep <- edits_split %>%
+#  mutate(AC = case_when(Reference == "A" ~ C/Coverage, TRUE ~ 0)) %>%
+  mutate(AG = case_when(Reference == "A" ~ G/`Coverage-q30`, TRUE ~ NA)) %>%
+#  mutate(AT = case_when(Reference == "A" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(CA = case_when(Reference == "C" ~ A/Coverage, TRUE ~ 0)) %>%
+#  mutate(CG = case_when(Reference == "C" ~ G/Coverage, TRUE ~ 0)) %>%
+#  mutate(CT = case_when(Reference == "C" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(GA = case_when(Reference == "G" ~ A/Coverage, TRUE ~ 0)) %>%
+#  mutate(GC = case_when(Reference == "G" ~ C/Coverage, TRUE ~ 0)) %>%
+#  mutate(GT = case_when(Reference == "G" ~ T/Coverage, TRUE ~ 0)) %>%
+#  mutate(TA = case_when(Reference == "T" ~ A/Coverage, TRUE ~ 0)) %>%
+  mutate(TC = case_when(Reference == "T" ~ C/`Coverage-q30`, TRUE ~ NA))
+#  mutate(TG = case_when(Reference == "T" ~ G/Coverage, TRUE ~ 0))
+
+
+freq1_hyph = edits_split %>% filter(Stage == "WT_hyph" & Frequency ==1)
+  hyph_nonfreq1 = edits_split %>% filter(Stage == "WT_hyph" & ! locus %in% freq1_hyph$locus)
+  ox.nonfreq1 = edits_split %>% filter(Stage == "OX_hyph" & !locus %in% freq1_hyph$locus)
+
+  #remove ox + replace with the nonfreq1
+edits_split_filt2 <- edits_split %>% filter(!Stage == "WT_hyph" & !Stage =="OX_hyph")
+edits_split_filt3 <- edits_split_filt2 %>% rbind(hyph_nonfreq1, ox.nonfreq1)
+
+atoi_edits <- edits_split %>% filter(AllSubs == "AG")
+stage.table <- atoi_edits %>% dplyr::select(group) %>% distinct(group, .keep_all = TRUE)
+
+
+
+      atoi_summary = atoi_edits %>% group_by(group) %>% summarize(reps = n_distinct(group), total_perrep = sum(G)/(n_distinct(group)), mededits = median(Frequency), nsites = n()/n_distinct(group))
+
+  
+      atoi_summary2 = edits_split_filt3 %>% group_by(Stage) %>% summarize(reps = n_distinct(group), total_perrep = sum(G)/(n_distinct(group)), mededits = median(Frequency), nsites = n()/n_distinct(group))
+
+      write.table(atoi_summary, file="./EditingResults/AtoI_Editing_Summary.txt")
+
+  write.table(atoi_summary2, file="./EditingResults/AtoI_Editing_Summary_1sremoved.txt")
+```
+
+### NOT used in paper - cluster developmentally-induced genes
+
+```{r}
+## Read in development count matrix
+BiocManager::install("ClusterGVis")
+library(ClusterGVis)
+library(edgeR)
+
+dev_count_df <- read.table("C:/Users/abbyd/Documents/Research/Bioinformatics/PeakCallingTFs/RNAseq/dev_counts_df.txt", sep="\t", header=TRUE)[,-1]
+
+dev_count_df2 <- dev_count_df %>% column_to_rownames(var = "Geneid") %>% dplyr""(-Length)
+
+
+## Reading in samplesheet from paper
+DE_samples <- read.table("C:/Users/abbyd/Documents/Research/Bioinformatics/FungalDevelopmentPaper/DifferentialExpression/DE_published_meta.txt", sep="\t", header=TRUE)
+
+DE_samples <- DE_samples %>% filter(Tissue == "Mycelia" & Sample == "WT_2" | Tissue == "WT Perithecium")
+  ## oops typo in the samplesheet
+  DE_samples <- arrange(DE_samples, SRR)
+  DE_samples[1:2,5]=rep("dpf6 Perithecium", 2) 
+  DE_samples$SampleName <- gsub(" Perithecium", "", DE_samples$SampleName)
+  DE_samples$SampleName <- gsub("WT ", "", DE_samples$SampleName)
+  group <- DE_samples$SampleName
+### Making EdgeR DE object
+dge <- DGEList(counts = dev_count_df2, group = group)
+dge
+
+  ### Filter out low-abundance genes and calculate normalization factors
+  keep <- filterByExpr(y = dge, min.count	= 5)
+  summary(keep) ##  removes 55 genes 
+  dge <- dge[keep, keep.lib.sizes=FALSE]
+  dge_norm <- calcNormFactors(object = dge)
+
+  ## extract normalized cpm
+ dev_cpm <- data.frame(cpm(dge, normalized.lib.sizes=TRUE, gene.length=dev_count_df$Length))
+
+ ## applying a light filtering metric to the data - removing genes with abs l2fc < 1 & p > 0.05 in all stages
+de_genes <- read.table("./RNAseq_Output/DE_Results/WT_DE_Gene_Matrix.txt", sep = "\t", header = TRUE)
+
+de_genes_sig <- de_genes %>% mutate(
+  Sig = case_when(abs(logFC) > 2 & FDR < 0.05 ~ 1,
+                    TRUE ~ 0.1)) %>%
+  dplyr::select(Sample, GeneID, Sig) %>%
+  pivot_wider(names_from=Sample, values_from=Sig, values_fill=0) %>%
+  rowwise() %>%
+  mutate(rowSum = sum(c_across(2:5))) %>%
+  filter(rowSum != 0.4)
+
+de_genes_fc <- de_genes %>% 
+  mutate(log.adj = case_when(FDR > 0.05 ~ 0.1, TRUE ~ logFC)) %>%
+  dplyr::select(Sample, GeneID, logFC) %>%
+  pivot_wider(names_from=Sample, values_from=logFC, values_fill=0) %>%
+  filter(GeneID %in% de_genes_sig$GeneID) %>% column_to_rownames(var="GeneID")
+
+# condense cpm matrix by replicate + change to more readable names
+dev_cpm <- dev_cpm %>% rownames_to_column(var = "GeneID") %>% 
+  filter(GeneID %in% de_genes_sig$GeneID) %>%
+  rowwise() %>%
+  mutate(dpf6 = mean(c_across(2:3)),
+         dpf5 = mean(c_across(4:5)),
+         dpf4 = mean(c_across(6:7)),
+         dpf3 = mean(c_across(8:9)),
+         hyphae = mean(c_across(10:11))) %>%
+  dplyr::select(GeneID, hyphae, dpf3, dpf4, dpf5, dpf6) %>%
+  column_to_rownames(var="GeneID")
+
+dev_cpm <- as.matrix(dev_cpm)
+# z-scale all cpm
+deg_scaled <- t(scale(t(dev_cpm)))
+# check optimal cluster numbers
+getClusters(obj = deg_scaled) ## using 6 clusters
+  
+# Perform K-means clustering on DEGs
+# nstart = 25 runs algorithm 25 times with different random starts
+# and returns the best result (lowest within-cluster SS)
+set.seed(123)  # For reproducibility
+kmeans_deg <- kmeans(deg_scaled, centers = 6, nstart = 25)
+
+deg_kmeans_clusters <- kmeans_deg$cluster
+
+
+deg_cluster_order <- order(deg_kmeans_clusters)
+deg_scaled_ordered_km <- deg_scaled[deg_cluster_order, ]
+deg_clusters_ordered <- deg_kmeans_clusters[deg_cluster_order]
+ 
+# Calculate gap positions between clusters
+deg_gap_positions <- which(diff(deg_clusters_ordered) != 0)
+ 
+# Create annotated heatmap with cluster separation
+library(pheatmap)
+hmap <- pheatmap(
+  deg_scaled_ordered_km,
+  cluster_rows = FALSE,  # Already ordered by K-means cluster
+  cluster_cols = FALSE,
+  annotation_row = data.frame(
+    Cluster = factor(deg_clusters_ordered),
+    row.names = rownames(deg_scaled_ordered_km)
+  ),
+#  annotation_col = annotation_col,
+  gaps_row = deg_gap_positions,  # Visual separation between clusters
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  color = colorRampPalette(c("#7CCD7C", "white", "#C1447EFF"))(100),
+  main = "K-means Clustering: Differentially Expressed Genes",
+  fontsize = 10,
+  filename = "./Clustering/kmeans_clustering_DEGs.png",
+  width = 10,
+  height = 8
+)
+
+# Save cluster assignments for downstream analysis
+deg_cluster_assignments <- data.frame(
+  GeneID = names(deg_kmeans_clusters),
+  Cluster = deg_kmeans_clusters)
+
+
+    Peak = deg_clusters_ordered_maxed$Peak)
+
+
+## ID the column of max expression for each cluster
+ deg_clusters_ordered_maxed <- as.data.frame(deg_scaled_ordered_km)
+ deg_clusters_ordered_maxed <- deg_clusters_ordered_maxed %>% 
+   mutate(Peak = names(.)[max.col(.)]) %>%
+   rownames_to_column(var="GeneID") %>%
+   left_join(deg_cluster_assignments)
+ 
+ cluster_mat <- deg_clusters_ordered_maxed %>% dplyr::select(GeneID, Peak, Cluster)
+
+ 
+## Adding Cluster 9 --> Genes with no change in expression during sex
+  de_genes_nonsig <- de_genes %>% distinct(GeneID) %>% filter(! GeneID %in% cluster_mat$GeneID) %>% mutate(Cluster = 7) %>% mutate(Peak = "NA")
+  
+allgene_cluster_assignments <- rbind(cluster_mat, de_genes_nonsig)
+
+write.csv(allgene_cluster_assignments, 
+          "./Clustering/kmeans_DEG_cluster_assignments.csv", 
+          row.names = FALSE)
+
+## summarize cluster assignments 
+ mode <- function(x) { names(which.max(table(x))) }
+
+deg_cluster_summary <- allgene_cluster_assignments %>% group_by(Cluster) %>% 
+  summarize(nMembers = n(), Mode=mode(Peak))
+
+
+```
+
+####Determine cluster identity of fsd-1 targets
+
+```{r}
+library(viridis)
+color = magma(5, alpha =1, begin = .1, end = 1, direction = 1)
+
+fsd1.clusters <- allgene_cluster_assignments %>% filter(GeneID %in% fsd1_targets)
+
+fsd.clusters.sum <- fsd1.clusters %>% group_by(Cluster) %>%
+  summarize(nMembers.fsd1Target=n()) %>% 
+  right_join(deg_cluster_summary, by = "Cluster") %>% 
+  mutate(Percent.fsd1.Targets = nMembers.fsd1Target/2255) %>%
+  mutate(Percent.of.Cluster.fsd1Target = nMembers.fsd1Target/nMembers)
+
+p2 <- fsd.clusters.sum %>%
+    arrange(Percent.fsd1.Targets) %>%
+    mutate(group=factor(Cluster)) %>%
+    ggplot( aes(x=Cluster, y=Percent.fsd1.Targets) ) +
+      geom_segment( aes(x=group ,xend=group, linewidth = 1.5, y=0, yend=Percent.fsd1.Targets), color="grey") +
+      geom_point(size=5, color="#69b3a2") +
+      coord_flip() +
+      theme(
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        legend.position="none"
+      ) +
+      theme_minimal() + 
+      xlab("Cluster") +
+      ylab("Percent of total FSD-1 targets in clusters") +
+      theme(axis.text.x = element_text(hjust = 1, size = 20),
+            axis.text.y = element_text(size = 20),
+            axis.title = element_text(size=20))
+
+p3 <- fsd.clusters.sum %>%
+    arrange(Percent.fsd1.Targets) %>%
+    mutate(group=factor(Cluster)) %>%
+    ggplot( aes(x=Cluster, y=Percent.of.Cluster.fsd1Target) ) +
+      geom_segment( aes(x=group ,xend=group, y=0, linewidth = 1.5, yend=Percent.of.Cluster.fsd1Target), color="grey") +
+      geom_point(size=5, color="orchid") +
+      coord_flip() +
+      theme(
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        legend.position="none"
+      ) +
+      theme_minimal() + 
+      xlab("") +
+      ylab("Percent of cluster membership is FSD-1 target") +
+        theme(axis.text.x = element_text(hjust = 1, size = 20),
+            axis.text.y = element_text(size = 20),
+            axis.title = element_text(size=20))
+
+clusters <- p2 + p3
+ggsave("./Clustering/Cluster_Lollipops.png", plot=clusters, dpi=400, width=35, height=25, units="cm")
+
+```
+
+
+### Process fluorescent images
+```{r}
+fluor_files <- list.files(path = "./Microscopy/", pattern = "fsd1gfp*", full.names = T, recursive = F)
+  
+#Creating count matrix of geneID and loci:
+fluor <- readr::read_csv(fluor_files, id = "file_name")
+fluor.stats <- fluor %>% summarise(median(IntDen))
+
+ggplot(fluor, aes(x=Mean)) + geom_histogram()
+
+```
+
